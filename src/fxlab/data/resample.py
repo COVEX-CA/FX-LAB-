@@ -62,7 +62,9 @@ def resample(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
         DataFrame resampleado que cumple el contrato de datos OHLCV.
     """
     if timeframe not in TIMEFRAMES:
-        raise ValueError(f"timeframe desconocido: {timeframe!r}, debe ser uno de {list(TIMEFRAMES)}")
+        raise ValueError(
+            f"timeframe desconocido: {timeframe!r}, debe ser uno de {list(TIMEFRAMES)}"
+        )
 
     validate_ohlcv_contract(df)
 

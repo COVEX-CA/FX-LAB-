@@ -10,10 +10,18 @@ un fichero parquet por mes natural (comprimido con snappy). Particionar por
 series distintas y mezclarlas en un mismo fichero impediría separarlas de
 nuevo. El rango cubierto por cada fichero se guarda en sus metadatos parquet
 para poder listar rangos cacheados sin leer los datos.
+
+Cada fichero mensual se escribe de forma atómica (fichero temporal + rename):
+si el proceso se interrumpe a mitad de escritura, el fichero final nunca
+queda a medias, así que `cached_ranges` jamás reporta un mes incompleto como
+cubierto. Al leer, los tipos de las columnas OHLCV se fuerzan explícitamente
+a `float64` en vez de confiar en lo que devuelva pyarrow.
 """
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -21,7 +29,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from fxlab.data.types import OfferSide
-from fxlab.data.validate import validate_ohlcv_contract
+from fxlab.data.validate import REQUIRED_COLUMNS, validate_ohlcv_contract
 
 DEFAULT_DATA_DIR = Path("data")
 
@@ -40,7 +48,31 @@ def _partition_dir(base_path: Path, symbol: str, interval: str, offer_side: Offe
 def _month_file_path(
     base_path: Path, symbol: str, interval: str, offer_side: OfferSide, year: int, month: int
 ) -> Path:
-    return _partition_dir(base_path, symbol, interval, offer_side) / f"{year:04d}-{month:02d}.parquet"
+    return (
+        _partition_dir(base_path, symbol, interval, offer_side) / f"{year:04d}-{month:02d}.parquet"
+    )
+
+
+def _write_table_atomic(table: pa.Table, path: Path) -> None:
+    """Escribe `table` en `path` de forma atómica.
+
+    Escribe primero a un fichero temporal en el mismo directorio y solo
+    renombra a `path` (operación atómica en el mismo sistema de ficheros) si
+    la escritura terminó con éxito. Si el proceso se interrumpe a mitad de
+    escritura, el temporal se borra y `path` nunca llega a existir a medias:
+    o no hay fichero (el mes se volverá a descargar en el próximo intento),
+    o hay uno completo. Sin esto, un mes cuya descarga se interrumpiera
+    podría quedar cacheado con datos incompletos sin que nada lo detectase.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        pq.write_table(table, tmp_path, compression="snappy")
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _empty_frame() -> pd.DataFrame:
@@ -81,7 +113,12 @@ def save(
     assert isinstance(index, pd.DatetimeIndex)
     for (year, month), month_df in df.groupby([index.year, index.month]):
         path = _month_file_path(
-            base_path, symbol, interval, offer_side, int(year), int(month)  # type: ignore[call-overload]
+            base_path,
+            symbol,
+            interval,
+            offer_side,
+            int(year),  # type: ignore[call-overload]
+            int(month),  # type: ignore[call-overload]
         )
         table = pa.Table.from_pandas(month_df, preserve_index=True)
         existing_meta = table.schema.metadata or {}
@@ -92,7 +129,7 @@ def save(
                 _META_END_KEY: month_df.index.max().isoformat().encode(),
             }
         )
-        pq.write_table(table, path, compression="snappy")
+        _write_table_atomic(table, path)
         written.append(path)
 
     return written
@@ -145,8 +182,22 @@ def load(
 
     result = pd.concat(frames).sort_index()
     result = result[~result.index.duplicated(keep="last")]
-    result = result[(result.index >= start) & (result.index < end)]
+
+    # Se fuerza el tipo explícitamente en vez de confiar en lo que devuelva
+    # pyarrow: un fichero parquet ajeno o mal escrito no debe colar tipos
+    # distintos de float64 silenciosamente.
+    for col in REQUIRED_COLUMNS:
+        if col in result.columns:
+            result[col] = result[col].astype("float64")
+
+    # Se valida el contrato de lo leído de disco ANTES de recortarlo al
+    # rango pedido: así, si un fichero cacheado está corrupto o mal escrito
+    # (índice naive, duplicados, NaN en OHLC...), se detecta aquí con un
+    # error claro en vez de fallar más abajo al comparar timestamps
+    # incompatibles al recortar el rango.
     validate_ohlcv_contract(result)
+
+    result = result[(result.index >= start) & (result.index < end)]
     return result
 
 

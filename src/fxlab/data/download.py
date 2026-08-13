@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import cast
 
 import dukascopy_python
@@ -37,8 +37,8 @@ class DownloadError(RuntimeError):
 
 def _ensure_utc(ts: datetime) -> datetime:
     if ts.tzinfo is None:
-        return ts.replace(tzinfo=timezone.utc)
-    return ts.astimezone(timezone.utc)
+        return ts.replace(tzinfo=UTC)
+    return ts.astimezone(UTC)
 
 
 def month_chunks(start: datetime, end: datetime) -> Iterator[tuple[datetime, datetime]]:

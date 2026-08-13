@@ -1,10 +1,8 @@
 #!/usr/bin/env python
 """CLI para descargar un símbolo y rango de fechas a la caché local en parquet.
 
-Orquesta `fxlab.data.download` y `fxlab.data.store`: por cada tramo mensual
-del rango pedido, si ya está cacheado en disco lo lee de ahí (sin red); si
-no, lo descarga de Dukascopy y lo guarda. Esto es lo que hace idempotente
-volver a pedir un rango ya descargado.
+Solo parsea argumentos: toda la lógica de caché/descarga vive en
+`fxlab.data.loader.load_range`.
 """
 
 from __future__ import annotations
@@ -15,10 +13,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import dukascopy_python
-import pandas as pd
 
-from fxlab.data.download import download, month_chunks
-from fxlab.data.store import DEFAULT_DATA_DIR, cached_ranges, load, save
+from fxlab.data.loader import load_range
+from fxlab.data.store import DEFAULT_DATA_DIR
 from fxlab.data.types import OfferSide
 
 logger = logging.getLogger("fxlab.download_data")
@@ -36,51 +33,6 @@ _INTERVAL_CHOICES = {
 
 def _parse_date(value: str) -> datetime:
     return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=UTC)
-
-
-def _is_chunk_cached(
-    symbol: str,
-    interval: str,
-    offer_side: OfferSide,
-    chunk_start: pd.Timestamp,
-    chunk_end: pd.Timestamp,
-    data_dir: Path,
-) -> bool:
-    for cached_start, cached_end in cached_ranges(symbol, interval, offer_side, data_dir):
-        if cached_start <= chunk_start and chunk_end <= cached_end:
-            return True
-    return False
-
-
-def download_to_cache(
-    symbol: str,
-    start: datetime,
-    end: datetime,
-    interval: str,
-    offer_side: OfferSide,
-    data_dir: Path = DEFAULT_DATA_DIR,
-) -> pd.DataFrame:
-    """Descarga (o lee de caché) un rango completo, tramo mensual a tramo mensual."""
-    frames = []
-    for chunk_start, chunk_end in month_chunks(start, end):
-        ts_start = pd.Timestamp(chunk_start)
-        ts_end = pd.Timestamp(chunk_end)
-        if _is_chunk_cached(symbol, interval, offer_side, ts_start, ts_end, data_dir):
-            logger.info("tramo cacheado, leyendo de disco: %s a %s", ts_start, ts_end)
-            chunk_df = load(symbol, interval, offer_side, ts_start, ts_end, data_dir)
-        else:
-            logger.info("tramo no cacheado, descargando: %s a %s", ts_start, ts_end)
-            chunk_df = download(symbol, chunk_start, chunk_end, interval, offer_side)
-            if not chunk_df.empty:
-                save(chunk_df, symbol, interval, offer_side, data_dir)
-        if not chunk_df.empty:
-            frames.append(chunk_df)
-
-    if not frames:
-        return load(symbol, interval, offer_side, pd.Timestamp(start), pd.Timestamp(end), data_dir)
-
-    result = pd.concat(frames).sort_index()
-    return result[~result.index.duplicated(keep="last")]
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -118,9 +70,7 @@ def main() -> None:
     interval = _INTERVAL_CHOICES[args.interval]
     offer_side = OfferSide(args.offer_side)
 
-    result = download_to_cache(
-        args.symbol, args.start, args.end, interval, offer_side, args.data_dir
-    )
+    result = load_range(args.symbol, args.start, args.end, interval, offer_side, args.data_dir)
     logger.info(
         "%d velas disponibles en caché para %s [%s, %s)",
         len(result),

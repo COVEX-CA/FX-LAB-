@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import dukascopy_python
@@ -26,20 +26,20 @@ def _fake_fetch_df(start: datetime) -> pd.DataFrame:
 
 
 def test_month_chunks_splits_by_calendar_month() -> None:
-    start = datetime(2024, 1, 15, tzinfo=timezone.utc)
-    end = datetime(2024, 3, 10, tzinfo=timezone.utc)
+    start = datetime(2024, 1, 15, tzinfo=UTC)
+    end = datetime(2024, 3, 10, tzinfo=UTC)
 
     chunks = list(month_chunks(start, end))
 
     assert chunks == [
-        (datetime(2024, 1, 15, tzinfo=timezone.utc), datetime(2024, 2, 1, tzinfo=timezone.utc)),
-        (datetime(2024, 2, 1, tzinfo=timezone.utc), datetime(2024, 3, 1, tzinfo=timezone.utc)),
-        (datetime(2024, 3, 1, tzinfo=timezone.utc), datetime(2024, 3, 10, tzinfo=timezone.utc)),
+        (datetime(2024, 1, 15, tzinfo=UTC), datetime(2024, 2, 1, tzinfo=UTC)),
+        (datetime(2024, 2, 1, tzinfo=UTC), datetime(2024, 3, 1, tzinfo=UTC)),
+        (datetime(2024, 3, 1, tzinfo=UTC), datetime(2024, 3, 10, tzinfo=UTC)),
     ]
 
 
 def test_month_chunks_empty_range_yields_nothing() -> None:
-    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    start = datetime(2024, 1, 1, tzinfo=UTC)
     assert list(month_chunks(start, start)) == []
 
 
@@ -54,8 +54,8 @@ def test_download_fetches_one_chunk_per_month(monkeypatch: pytest.MonkeyPatch) -
 
     result = download(
         "EUR/USD",
-        datetime(2024, 1, 15, tzinfo=timezone.utc),
-        datetime(2024, 3, 10, tzinfo=timezone.utc),
+        datetime(2024, 1, 15, tzinfo=UTC),
+        datetime(2024, 3, 10, tzinfo=UTC),
     )
 
     assert len(calls) == 3
@@ -74,8 +74,8 @@ def test_download_uses_correct_offer_side_code(monkeypatch: pytest.MonkeyPatch) 
 
     download(
         "EUR/USD",
-        datetime(2024, 1, 1, tzinfo=timezone.utc),
-        datetime(2024, 1, 15, tzinfo=timezone.utc),
+        datetime(2024, 1, 1, tzinfo=UTC),
+        datetime(2024, 1, 15, tzinfo=UTC),
         offer_side=OfferSide.ASK,
     )
 
@@ -97,8 +97,8 @@ def test_download_retries_with_backoff_then_succeeds(monkeypatch: pytest.MonkeyP
 
     result = download(
         "EUR/USD",
-        datetime(2024, 1, 1, tzinfo=timezone.utc),
-        datetime(2024, 1, 15, tzinfo=timezone.utc),
+        datetime(2024, 1, 1, tzinfo=UTC),
+        datetime(2024, 1, 15, tzinfo=UTC),
         max_retries=5,
         backoff_seconds=1.0,
     )
@@ -118,14 +118,14 @@ def test_download_raises_after_exhausting_retries(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(DownloadError):
         download(
             "EUR/USD",
-            datetime(2024, 1, 1, tzinfo=timezone.utc),
-            datetime(2024, 1, 15, tzinfo=timezone.utc),
+            datetime(2024, 1, 1, tzinfo=UTC),
+            datetime(2024, 1, 15, tzinfo=UTC),
             max_retries=2,
         )
 
 
 def test_download_empty_range_returns_empty_frame() -> None:
-    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    start = datetime(2024, 1, 1, tzinfo=UTC)
     result = download("EUR/USD", start, start)
 
     assert result.empty
