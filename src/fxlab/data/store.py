@@ -258,11 +258,14 @@ def cached_ranges(
     `is_month_complete`, no con esto.
 
     Dentro de los meses completos, los rangos se derivan de los metadatos
-    (min/max real de cada fichero), sin leer los datos, y los meses
-    consecutivos se fusionan en un mismo rango si el hueco entre ellos es
-    menor a 3 días (cubre fines de semana e intervalos diarios/4h) — esto es
-    solo para que el informe salga como rangos continuos legibles, no afecta
-    a qué se considera cacheado.
+    (min/max real de cada fichero), sin leer los datos. Dos meses completos
+    se fusionan en un mismo rango si son consecutivos en el calendario
+    (p.ej. 2024-01 seguido de 2024-02), comparando (año, mes) directamente
+    — no hay ninguna comparación de fechas con margen: como la unidad de
+    caché es siempre el mes natural completo, "consecutivo" tiene un
+    significado exacto y no aproximado. Esto es solo para que el informe
+    salga como rangos continuos legibles; no afecta a qué se considera
+    cacheado (eso lo decide `is_month_complete`).
 
     Returns:
         Lista de tuplas (inicio, fin) ordenadas, con timestamps tal como se
@@ -279,21 +282,35 @@ def cached_ranges(
             continue
         if _META_START_KEY not in metadata or _META_END_KEY not in metadata:
             continue
+        year, month = _parse_month_filename(path)
         chunk_start = pd.Timestamp(metadata[_META_START_KEY].decode())
         chunk_end = pd.Timestamp(metadata[_META_END_KEY].decode())
-        bounds.append((chunk_start, chunk_end))
+        bounds.append((year, month, chunk_start, chunk_end))
 
-    bounds.sort(key=lambda pair: pair[0])
+    bounds.sort(key=lambda item: (item[0], item[1]))
 
     merged: list[tuple[pd.Timestamp, pd.Timestamp]] = []
-    report_merge_gap = pd.Timedelta(days=3)
-    for chunk_start, chunk_end in bounds:
-        if merged and chunk_start - merged[-1][1] <= report_merge_gap:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], chunk_end))
+    prev_year_month: tuple[int, int] | None = None
+    for year, month, chunk_start, chunk_end in bounds:
+        if (
+            merged
+            and prev_year_month is not None
+            and _next_year_month(*prev_year_month)
+            == (
+                year,
+                month,
+            )
+        ):
+            merged[-1] = (merged[-1][0], chunk_end)
         else:
             merged.append((chunk_start, chunk_end))
+        prev_year_month = (year, month)
 
     return merged
+
+
+def _next_year_month(year: int, month: int) -> tuple[int, int]:
+    return (year + 1, 1) if month == 12 else (year, month + 1)
 
 
 def _parse_month_filename(path: Path) -> tuple[int, int]:
