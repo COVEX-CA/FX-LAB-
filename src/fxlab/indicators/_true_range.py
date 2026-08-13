@@ -4,6 +4,25 @@
 No es un indicador nuevo añadido por su cuenta: es la pieza de cálculo que
 esos tres indicadores ya pedidos necesitan, factorizada una sola vez para no
 triplicar la fórmula (y el riesgo de que diverjan).
+
+El suavizado usado es el de Wilder (`wilder_smooth`, alpha=1/period), no una
+media simple ni una EMA "clásica" (alpha=2/(period+1)), y es el mismo para
+los tres consumidores — nunca una copia paralela. Dos razones, no solo una
+preferencia de estilo:
+
+1. Es la definición histórica: "ATR" significa, por convención desde 1978,
+   rango verdadero suavizado a la manera de Wilder. Suavizarlo con una media
+   simple produciría un número distinto que ya no sería un ATR real, sino
+   otro indicador con el mismo nombre.
+2. En ADX específicamente, no es opcional: Wilder diseñó +DI/-DI con
+   `100 * suavizado(+DM) / suavizado(TR)`. Si TR y +DM/-DM se suavizaran con
+   operadores distintos (p.ej. TR con una media simple y +DM con el
+   suavizado de Wilder), el cociente dejaría de significar "proporción del
+   rango verdadero explicada por el movimiento direccional" — perdería la
+   interpretación que le da sentido al indicador, aunque el cálculo siguiera
+   siendo numéricamente válido. Por eso `adx()` en `trend_strength.py`
+   importa `wilder_smooth` de aquí y lo aplica igual a TR, +DM y -DM (y
+   luego a DX->ADX), en vez de tener su propio suavizado.
 """
 
 from __future__ import annotations
@@ -40,9 +59,13 @@ def wilder_smooth(series: pd.Series, period: int) -> pd.Series:
     los primeros `period` valores válidos de `series`.
 
     Es el suavizado que Wilder usa para ATR, +DM, -DM y DX->ADX — distinto
-    del alpha=2/(period+1) de una EMA "clásica". Robusto a que `series`
-    empiece con `NaN` (p.ej. `true_range` no está definida hasta que hay
-    suficientes barras previas para otros cálculos encadenados).
+    del alpha=2/(period+1) de una EMA "clásica". Debe ser el mismo para los
+    tres en ADX: el cociente `100 * suavizado(+DM) / suavizado(TR)` solo
+    significa "proporción del rango verdadero explicada por el movimiento
+    direccional" si numerador y denominador se suavizan con el mismo
+    operador (ver docstring del módulo). Robusto a que `series` empiece con
+    `NaN` (p.ej. `true_range` no está definida hasta que hay suficientes
+    barras previas para otros cálculos encadenados).
     """
     result = pd.Series(np.nan, index=series.index, dtype="float64")
     valid = series.dropna()

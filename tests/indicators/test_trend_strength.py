@@ -107,22 +107,6 @@ def test_adx_measures_strength_not_direction() -> None:
     assert adx_up.dropna().iloc[-1] == pytest.approx(adx_down.dropna().iloc[-1], rel=0.05)
 
 
-def test_adx_no_lookahead() -> None:
-    n, cutoff = 80, 60
-    t = np.arange(n)
-    close = _series(list(100 + np.cumsum(np.sin(t / 3.0))))
-    high = close + 0.5
-    low = close - 0.5
-
-    adx_result, plus_di, minus_di = adx(high, low, close, period=10)
-
-    modified_close = close.copy()
-    modified_close.iloc[cutoff + 1 :] = modified_close.iloc[cutoff + 1 :] * 5 + 1000
-    modified_high = modified_close + 0.5
-    modified_low = modified_close - 0.5
-    m_adx, m_plus_di, m_minus_di = adx(modified_high, modified_low, modified_close, period=10)
-
-    for original, mod in ((adx_result, m_adx), (plus_di, m_plus_di), (minus_di, m_minus_di)):
-        prefix_o, prefix_m = original.iloc[: cutoff + 1], mod.iloc[: cutoff + 1]
-        assert prefix_o.notna().sum() > 0
-        pd.testing.assert_series_equal(prefix_o, prefix_m, check_exact=False)
+# El no-lookahead de adx() lo cubre el mecanismo genérico en
+# tests/indicators/test_lookahead.py, vía fxlab.indicators.registry.INDICATORS
+# ("adx"). Ver la misma nota en test_distance.py.

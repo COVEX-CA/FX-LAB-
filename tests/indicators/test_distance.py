@@ -102,28 +102,8 @@ def test_distance_output_shape_matches_input() -> None:
     assert result_atr.index.equals(price.index)
 
 
-def test_distance_no_lookahead() -> None:
-    n = 60
-    cutoff = 40
-    index = pd.date_range("2024-01-01", periods=n, freq="1D", tz="UTC")
-    rng = np.random.default_rng(1)
-    price = pd.Series(100 + np.cumsum(rng.normal(0, 1, n)), index=index)
-    ma = price.rolling(5, min_periods=5).mean()
-    high = price + 1
-    low = price - 1
-
-    for method, kwargs in (("std", {}), ("atr", {"high": high, "low": low})):
-        original = distance(price, ma, method=method, **kwargs)
-
-        modified_price = price.copy()
-        modified_price.iloc[cutoff + 1 :] = modified_price.iloc[cutoff + 1 :] * 5 + 1000
-        modified_ma = modified_price.rolling(5, min_periods=5).mean()
-        modified_kwargs = dict(kwargs)
-        if method == "atr":
-            modified_kwargs = {"high": modified_price + 1, "low": modified_price - 1}
-        modified = distance(modified_price, modified_ma, method=method, **modified_kwargs)
-
-        prefix_original = original.iloc[: cutoff + 1]
-        prefix_modified = modified.iloc[: cutoff + 1]
-        assert prefix_original.notna().sum() > 0
-        pd.testing.assert_series_equal(prefix_original, prefix_modified, check_exact=False)
+# El no-lookahead de distance() (ambos métodos) lo cubre el mecanismo
+# genérico en tests/indicators/test_lookahead.py, vía el registro
+# `fxlab.indicators.registry.INDICATORS` ("distance_std", "distance_atr").
+# Mantenerlo también aquí sería un segundo mecanismo probando exactamente
+# la misma propiedad sobre la misma función, sin más cobertura real.

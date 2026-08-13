@@ -98,22 +98,9 @@ def test_bollinger_output_shape_matches_input() -> None:
         assert s.index.equals(price.index)
 
 
-def test_bollinger_no_lookahead() -> None:
-    n, cutoff = 60, 40
-    index = pd.date_range("2024-01-01", periods=n, freq="1D", tz="UTC")
-    rng = np.random.default_rng(3)
-    price = pd.Series(100 + np.cumsum(rng.normal(0, 1, n)), index=index)
-
-    upper, central, lower = bollinger(price, period=10)
-
-    modified = price.copy()
-    modified.iloc[cutoff + 1 :] = modified.iloc[cutoff + 1 :] * 5 + 1000
-    m_upper, m_central, m_lower = bollinger(modified, period=10)
-
-    for original, mod in ((upper, m_upper), (central, m_central), (lower, m_lower)):
-        prefix_o, prefix_m = original.iloc[: cutoff + 1], mod.iloc[: cutoff + 1]
-        assert prefix_o.notna().sum() > 0
-        pd.testing.assert_series_equal(prefix_o, prefix_m, check_exact=False)
+# El no-lookahead de bollinger() lo cubre el mecanismo genérico en
+# tests/indicators/test_lookahead.py, vía fxlab.indicators.registry.INDICATORS
+# ("bollinger"). Ver la misma nota en test_distance.py.
 
 
 # --- Keltner -------------------------------------------------------------
@@ -186,23 +173,6 @@ def test_keltner_output_shape_matches_input() -> None:
         assert s.index.equals(close.index)
 
 
-def test_keltner_no_lookahead() -> None:
-    n, cutoff = 60, 40
-    index = pd.date_range("2024-01-01", periods=n, freq="1D", tz="UTC")
-    rng = np.random.default_rng(5)
-    close = pd.Series(100 + np.cumsum(rng.normal(0, 1, n)), index=index)
-    high = close + 1
-    low = close - 1
-
-    upper, central, lower = keltner(close, high, low, period=10)
-
-    modified_close = close.copy()
-    modified_close.iloc[cutoff + 1 :] = modified_close.iloc[cutoff + 1 :] * 5 + 1000
-    modified_high = modified_close + 1
-    modified_low = modified_close - 1
-    m_upper, m_central, m_lower = keltner(modified_close, modified_high, modified_low, period=10)
-
-    for original, mod in ((upper, m_upper), (central, m_central), (lower, m_lower)):
-        prefix_o, prefix_m = original.iloc[: cutoff + 1], mod.iloc[: cutoff + 1]
-        assert prefix_o.notna().sum() > 0
-        pd.testing.assert_series_equal(prefix_o, prefix_m, check_exact=False)
+# El no-lookahead de keltner() lo cubre el mecanismo genérico en
+# tests/indicators/test_lookahead.py, vía fxlab.indicators.registry.INDICATORS
+# ("keltner"). Ver la misma nota en test_distance.py.

@@ -307,13 +307,38 @@ def test_t3_coefficients_sum_to_one() -> None:
     assert c1 + c2 + c3 + c4 == pytest.approx(1.0)
 
 
-def test_t3_constant_series_reproduces_the_constant() -> None:
-    # Consecuencia directa de la identidad anterior: T3 de una serie
-    # constante debe reproducir exactamente esa constante allí donde esté
-    # definida (requiere ~6*(period-1) barras de arranque con period=2).
-    price = _series([7.0] * 10)
-    result = t3(price, period=2, v=0.7)
+def test_t3_hand_calculated_via_chained_emas() -> None:
+    # Sobre una serie constante, T3 reproduce la constante sea cual sea el
+    # emparejamiento coeficiente<->nivel de EMA (con e3=e4=e5=e6, un error
+    # de asignación no se detectaría). Aquí se encadenan las seis EMA a
+    # mano con `_hand_ema` sobre una serie NO constante, para que un error
+    # en qué coeficiente multiplica a qué nivel, o en el orden de
+    # anidamiento, sí cambie el resultado y el test lo detecte.
+    values = [1.0, 2.0, 4.0, 3.0, 6.0, 5.0, 8.0, 7.0, 9.0, 10.0, 12.0, 11.0, 14.0, 13.0, 16.0]
+    period = 2
+    v = 0.7
+    price = _series(values)
+    result = t3(price, period=period, v=v)
+
+    e1 = _hand_ema(values, period)
+    e2 = [np.nan] + _hand_ema(e1[1:], period)
+    e3 = [np.nan, np.nan] + _hand_ema(e2[2:], period)
+    e4 = [np.nan] * 3 + _hand_ema(e3[3:], period)
+    e5 = [np.nan] * 4 + _hand_ema(e4[4:], period)
+    e6 = [np.nan] * 5 + _hand_ema(e5[5:], period)
+
+    c1 = -(v**3)
+    c2 = 3 * v**2 + 3 * v**3
+    c3 = -6 * v**2 - 3 * v - 3 * v**3
+    c4 = 1 + 3 * v + v**3 + 3 * v**2
+
+    expected = []
+    for e3_t, e4_t, e5_t, e6_t in zip(e3, e4, e5, e6, strict=True):
+        if np.isnan(e3_t) or np.isnan(e4_t) or np.isnan(e5_t) or np.isnan(e6_t):
+            expected.append(np.nan)
+        else:
+            expected.append(c1 * e6_t + c2 * e5_t + c3 * e4_t + c4 * e3_t)
 
     assert result.iloc[:6].isna().all()
     assert result.iloc[6:].notna().all()
-    np.testing.assert_allclose(result.iloc[6:].to_numpy(), 7.0, rtol=1e-6)
+    np.testing.assert_allclose(result.to_numpy(), expected, rtol=1e-6)
