@@ -9,6 +9,8 @@ dependencies = [
     "pandas>=2.2",
     "pyarrow>=17.0",
     "numpy>=1.26",
+    "vectorbt==1.1.0",
+    "pyyaml>=6.0.3",
 ]
 
 [dependency-groups]
@@ -17,6 +19,7 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
     "pandas-stubs>=2.2",
+    "types-pyyaml>=6.0.12.20260724",
 ]
 
 [build-system]
@@ -39,7 +42,7 @@ strict = true
 files = ["src"]
 
 [[tool.mypy.overrides]]
-module = ["dukascopy_python.*", "pyarrow.*"]
+module = ["dukascopy_python.*", "pyarrow.*", "vectorbt.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

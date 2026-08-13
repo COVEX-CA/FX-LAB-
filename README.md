@@ -33,3 +33,14 @@ uv run python scripts/download_data.py --symbol EUR/USD \
 
 Los datos descargados se cachean en `data/` (particionado por símbolo,
 intervalo y lado) y no se versionan en git.
+
+## Ejecutar un barrido de parámetros
+
+```bash
+uv run python scripts/run_sweep.py configs/pullback_eurusd_h1.yaml
+```
+
+Opera siempre sobre la partición de desarrollo (2004–2019) salvo que se pida
+explícitamente `--partition holdout`. Cada combinación evaluada, gane o
+pierda, queda registrada en un SQLite (`data/sweep_trials.db` por defecto);
+el script no imprime rankings ni "mejores resultados".
