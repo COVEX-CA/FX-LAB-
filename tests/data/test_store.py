@@ -8,7 +8,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from fxlab.data import store as store_module
-from fxlab.data.store import cached_ranges, load, save
+from fxlab.data.store import cached_ranges, is_month_complete, load, save
 from fxlab.data.types import OfferSide
 from fxlab.data.validate import DataContractError
 
@@ -30,7 +30,7 @@ def _daily_df(start: str, periods: int) -> pd.DataFrame:
 
 def test_save_creates_one_file_per_month(tmp_path: Path) -> None:
     df = _daily_df("2024-01-25", periods=10)  # cruza de enero a febrero 2024
-    written = save(df, "EUR/USD", "1DAY", OfferSide.BID, base_path=tmp_path)
+    written = save(df, "EUR/USD", "1DAY", OfferSide.BID, complete=True, base_path=tmp_path)
 
     assert len(written) == 2
     directory = tmp_path / "EUR_USD" / "1DAY" / "bid"
@@ -40,7 +40,7 @@ def test_save_creates_one_file_per_month(tmp_path: Path) -> None:
 
 def test_save_load_roundtrip_is_lossless(tmp_path: Path) -> None:
     df = _daily_df("2024-01-25", periods=10)
-    save(df, "EUR/USD", "1DAY", OfferSide.BID, base_path=tmp_path)
+    save(df, "EUR/USD", "1DAY", OfferSide.BID, complete=True, base_path=tmp_path)
 
     loaded = load(
         "EUR/USD",
@@ -58,7 +58,7 @@ def test_save_load_roundtrip_is_lossless(tmp_path: Path) -> None:
 
 def test_load_filters_to_requested_range(tmp_path: Path) -> None:
     df = _daily_df("2024-01-01", periods=20)
-    save(df, "EUR/USD", "1DAY", OfferSide.BID, base_path=tmp_path)
+    save(df, "EUR/USD", "1DAY", OfferSide.BID, complete=True, base_path=tmp_path)
 
     start = pd.Timestamp("2024-01-10", tz="UTC")
     end = pd.Timestamp("2024-01-15", tz="UTC")
@@ -84,8 +84,8 @@ def test_bid_and_ask_are_stored_separately(tmp_path: Path) -> None:
     ask_df = bid_df.copy()
     ask_df["open"] += 0.001
 
-    save(bid_df, "EUR/USD", "1DAY", OfferSide.BID, base_path=tmp_path)
-    save(ask_df, "EUR/USD", "1DAY", OfferSide.ASK, base_path=tmp_path)
+    save(bid_df, "EUR/USD", "1DAY", OfferSide.BID, complete=True, base_path=tmp_path)
+    save(ask_df, "EUR/USD", "1DAY", OfferSide.ASK, complete=True, base_path=tmp_path)
 
     start = pd.Timestamp("2024-01-01", tz="UTC")
     end = pd.Timestamp("2024-01-06", tz="UTC")
@@ -97,7 +97,7 @@ def test_bid_and_ask_are_stored_separately(tmp_path: Path) -> None:
 
 def test_cached_ranges_reports_saved_data(tmp_path: Path) -> None:
     df = _daily_df("2024-01-25", periods=10)
-    save(df, "EUR/USD", "1DAY", OfferSide.BID, base_path=tmp_path)
+    save(df, "EUR/USD", "1DAY", OfferSide.BID, complete=True, base_path=tmp_path)
 
     ranges = cached_ranges("EUR/USD", "1DAY", OfferSide.BID, base_path=tmp_path)
 
@@ -108,6 +108,43 @@ def test_cached_ranges_reports_saved_data(tmp_path: Path) -> None:
 
 
 def test_cached_ranges_empty_when_nothing_saved(tmp_path: Path) -> None:
+    assert cached_ranges("EUR/USD", "1DAY", OfferSide.BID, base_path=tmp_path) == []
+
+
+def test_is_month_complete_reflects_the_complete_flag(tmp_path: Path) -> None:
+    assert not is_month_complete("EUR/USD", "1DAY", OfferSide.BID, 2024, 1, base_path=tmp_path)
+
+    save(
+        _daily_df("2024-01-01", periods=31),
+        "EUR/USD",
+        "1DAY",
+        OfferSide.BID,
+        complete=False,
+        base_path=tmp_path,
+    )
+    assert not is_month_complete("EUR/USD", "1DAY", OfferSide.BID, 2024, 1, base_path=tmp_path)
+
+    save(
+        _daily_df("2024-01-01", periods=31),
+        "EUR/USD",
+        "1DAY",
+        OfferSide.BID,
+        complete=True,
+        base_path=tmp_path,
+    )
+    assert is_month_complete("EUR/USD", "1DAY", OfferSide.BID, 2024, 1, base_path=tmp_path)
+
+
+def test_cached_ranges_excludes_incomplete_months(tmp_path: Path) -> None:
+    save(
+        _daily_df("2024-01-01", periods=31),
+        "EUR/USD",
+        "1DAY",
+        OfferSide.BID,
+        complete=False,
+        base_path=tmp_path,
+    )
+
     assert cached_ranges("EUR/USD", "1DAY", OfferSide.BID, base_path=tmp_path) == []
 
 
@@ -212,7 +249,7 @@ def test_interrupted_write_leaves_no_partial_file(
     monkeypatch.setattr(store_module.pq, "write_table", flaky_write_table)
 
     with pytest.raises(OSError):
-        save(df, "EUR/USD", "1DAY", OfferSide.BID, base_path=tmp_path)
+        save(df, "EUR/USD", "1DAY", OfferSide.BID, complete=True, base_path=tmp_path)
 
     directory = tmp_path / "EUR_USD" / "1DAY" / "bid"
     # ni el fichero final ni restos temporales deben quedar en disco
@@ -251,10 +288,10 @@ def test_successful_write_is_visible_after_interrupted_one(
     monkeypatch.setattr(store_module.pq, "write_table", flaky_then_ok)
 
     with pytest.raises(OSError):
-        save(df, "EUR/USD", "1DAY", OfferSide.BID, base_path=tmp_path)
+        save(df, "EUR/USD", "1DAY", OfferSide.BID, complete=True, base_path=tmp_path)
 
     # reintento: esta vez la escritura se completa
-    save(df, "EUR/USD", "1DAY", OfferSide.BID, base_path=tmp_path)
+    save(df, "EUR/USD", "1DAY", OfferSide.BID, complete=True, base_path=tmp_path)
 
     ranges = cached_ranges("EUR/USD", "1DAY", OfferSide.BID, base_path=tmp_path)
     assert len(ranges) == 1
