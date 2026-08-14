@@ -22,7 +22,7 @@ def _record(reg: TrialRegistry, experiment_id: str, i: int, *, n_trades: int = 0
         params={"i": i, "name": "sma"},
         n_trades=n_trades,
         total_return=0.01 if n_trades else None,
-        sharpe=1.0 if n_trades else None,
+        sharpe_annualized=1.0 if n_trades else None,
         max_drawdown=-0.01 if n_trades else None,
         profit_factor=1.2 if n_trades else None,
         win_rate=0.5 if n_trades else None,
@@ -53,7 +53,7 @@ def test_zero_trade_combination_is_recorded_not_omitted(tmp_path: Path) -> None:
     assert df.iloc[0]["n_trades"] == 0
     assert df.iloc[0]["note"] == "sin operaciones"
     assert pd.isna(df.iloc[0]["total_return"])
-    assert pd.isna(df.iloc[0]["sharpe"])
+    assert pd.isna(df.iloc[0]["sharpe_annualized"])
 
 
 def test_load_experiment_returns_dataframe_with_expanded_params(tmp_path: Path) -> None:
@@ -107,7 +107,7 @@ def test_registry_survives_hard_kill_mid_write(tmp_path: Path) -> None:
         "        experiment_id='crash', symbol='EUR/USD', interval='1HOUR',\n"
         "        partition='development', start_date=idx, end_date=idx,\n"
         "        data_hash='h', params={'i': i}, n_trades=0, total_return=None,\n"
-        "        sharpe=None, max_drawdown=None, profit_factor=None,\n"
+        "        sharpe_annualized=None, max_drawdown=None, profit_factor=None,\n"
         "        win_rate=None, expectancy=None, note='sin operaciones',\n"
         "    )\n"
         "    print(f'WROTE {i}', flush=True)\n"

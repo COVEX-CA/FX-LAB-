@@ -26,7 +26,7 @@ from fxlab.validation.deflated_sharpe import (
     sharpe_stats_from_returns,
 )
 from fxlab.validation.pbo import probability_of_backtest_overfitting
-from fxlab.validation.report import DSR_SIGNIFICANT
+from fxlab.validation.report import DSR_SIGNIFICANT, MIN_EFFECTIVE_TRIALS
 
 _T = 1600  # múltiplo de 16, para poder usar s=16 en PBO
 _DISTANCE_THRESHOLD = 0.3
@@ -50,9 +50,15 @@ def test_pure_noise_pbo_averages_near_one_half_and_best_dsr_is_not_significant()
         pbo_result = probability_of_backtest_overfitting(returns, s=16)
         pbos.append(pbo_result.pbo)
 
-        sharpes = [sharpe_stats_from_returns(returns[col]).sharpe for col in returns.columns]
+        sharpes = [
+            sharpe_stats_from_returns(returns[col]).sharpe_non_annualized for col in returns.columns
+        ]
         best_col = returns.columns[int(np.argmax(sharpes))]
-        n_effective = effective_n_trials(returns, distance_threshold=_DISTANCE_THRESHOLD)
+        n_effective = effective_n_trials(
+            returns,
+            distance_threshold=_DISTANCE_THRESHOLD,
+            min_effective_trials=MIN_EFFECTIVE_TRIALS,
+        )
         dsr_result = deflated_sharpe_ratio(returns[best_col], sharpes, n_effective)
         dsrs.append(dsr_result.dsr)
 
@@ -81,8 +87,14 @@ def test_real_persistent_edge_gives_low_pbo_and_high_dsr() -> None:
             f"real inyectada (semilla {seed}), dio {pbo_result.pbo}"
         )
 
-        sharpes = [sharpe_stats_from_returns(returns[col]).sharpe for col in returns.columns]
-        n_effective = effective_n_trials(returns, distance_threshold=_DISTANCE_THRESHOLD)
+        sharpes = [
+            sharpe_stats_from_returns(returns[col]).sharpe_non_annualized for col in returns.columns
+        ]
+        n_effective = effective_n_trials(
+            returns,
+            distance_threshold=_DISTANCE_THRESHOLD,
+            min_effective_trials=MIN_EFFECTIVE_TRIALS,
+        )
         dsr_result = deflated_sharpe_ratio(returns["c0"], sharpes, n_effective)
         assert dsr_result.dsr > 0.9, (
             f"DSR de la configuración con ventaja real debería ser alto "

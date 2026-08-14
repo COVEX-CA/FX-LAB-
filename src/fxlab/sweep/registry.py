@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS trials (
     params_json TEXT NOT NULL,
     n_trades INTEGER NOT NULL,
     total_return REAL,
-    sharpe REAL,
+    sharpe_annualized REAL,
     max_drawdown REAL,
     profit_factor REAL,
     win_rate REAL,
@@ -121,7 +121,7 @@ class TrialRegistry:
         params: Mapping[str, object],
         n_trades: int,
         total_return: float | None,
-        sharpe: float | None,
+        sharpe_annualized: float | None,
         max_drawdown: float | None,
         profit_factor: float | None,
         win_rate: float | None,
@@ -139,7 +139,7 @@ class TrialRegistry:
             INSERT INTO trials (
                 experiment_id, created_at, symbol, interval, partition,
                 start_date, end_date, data_hash, code_version, params_json,
-                n_trades, total_return, sharpe, max_drawdown, profit_factor,
+                n_trades, total_return, sharpe_annualized, max_drawdown, profit_factor,
                 win_rate, expectancy, note
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -156,7 +156,7 @@ class TrialRegistry:
                 json.dumps(dict(params), sort_keys=True, default=str),
                 n_trades,
                 total_return,
-                sharpe,
+                sharpe_annualized,
                 max_drawdown,
                 profit_factor,
                 win_rate,

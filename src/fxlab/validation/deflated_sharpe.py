@@ -33,10 +33,29 @@ correlación (ver su docstring para el método exacto y sus limitaciones).
 `deflated_sharpe_ratio` no calcula esta estimación por su cuenta: recibe
 `n_trials_effective` ya calculado, para no acoplar la fórmula del DSR a un
 método concreto de estimación.
+
+### El modo de fallo asimétrico de esa estimación
+
+`SR0` crece como `sqrt(2·ln N)`: por encima de N≈5 es casi plano (pasar de
+30 a 1000 pruebas solo sube el listón un 57%), pero por debajo de 3 hay un
+acantilado, y en `N=1` la deflación es exactamente cero. Es decir:
+**sobreestimar N sale barato y subestimarlo sale carísimo**, y subestimarlo
+es justo lo que ocurre cuando la rejilla es más redundante — una rejilla de
+30 variantes de una misma señal (correlación ~0.9) se colapsa a un único
+cluster con cualquier umbral entre 0.1 y 0.5. Ahí el DSR degenera en un
+test de significación al 95% sin ninguna corrección por selección, y da
+DSR≈0.98 sobre ruido puro.
+
+Por eso `effective_n_trials` avisa (`logging.warning`) cuando el resultado
+cae por debajo del mínimo, y `fxlab.validation.report` retira el veredicto
+`CANDIDATO` en ese caso. Esta función informa; no corrige el número, porque
+inventarle un suelo al valor devuelto falsearía la estimación en vez de
+señalar que la rejilla no sostiene la conclusión.
 """
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -47,6 +66,8 @@ from scipy import stats
 from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform
 
+logger = logging.getLogger(__name__)
+
 EULER_MASCHERONI = 0.5772156649015329
 
 
@@ -54,7 +75,10 @@ EULER_MASCHERONI = 0.5772156649015329
 class SharpeStats:
     """Estadísticos de una serie de retornos, sin anualizar."""
 
-    sharpe: float
+    sharpe_non_annualized: float
+    """Sufijo explícito: `fxlab.sweep.engine.TrialResult.sharpe_annualized`
+    es el mismo estadístico multiplicado por `sqrt(periodos/año)`. Ver el
+    docstring del módulo."""
     n: int
     skewness: float
     """Asimetría (g3), estimador de momentos (`scipy.stats.skew(bias=True)`)."""
@@ -87,7 +111,7 @@ def sharpe_stats_from_returns(returns: pd.Series | np.ndarray) -> SharpeStats:
     sharpe = mean / std if std > 0 else float("nan")
     skewness = float(stats.skew(values, bias=True))
     kurtosis = float(stats.kurtosis(values, fisher=False, bias=True))
-    return SharpeStats(sharpe=sharpe, n=n, skewness=skewness, kurtosis=kurtosis)
+    return SharpeStats(sharpe_non_annualized=sharpe, n=n, skewness=skewness, kurtosis=kurtosis)
 
 
 def probabilistic_sharpe_ratio(
@@ -167,7 +191,7 @@ def expected_max_sharpe_under_luck(sharpe_variance: float, n_trials: int) -> flo
 class DeflatedSharpeResult:
     dsr: float
     sr0: float
-    sharpe: float
+    sharpe_non_annualized: float
     """Sharpe (sin anualizar) de la combinación evaluada."""
     n_trials_raw: int
     n_trials_effective: int
@@ -205,20 +229,26 @@ def deflated_sharpe_ratio(
 
     sr0 = expected_max_sharpe_under_luck(sr_variance, n_trials_effective)
     dsr = probabilistic_sharpe_ratio(
-        target_stats.sharpe, target_stats.n, target_stats.skewness, target_stats.kurtosis, sr0
+        target_stats.sharpe_non_annualized,
+        target_stats.n,
+        target_stats.skewness,
+        target_stats.kurtosis,
+        sr0,
     )
 
     return DeflatedSharpeResult(
         dsr=dsr,
         sr0=sr0,
-        sharpe=target_stats.sharpe,
+        sharpe_non_annualized=target_stats.sharpe_non_annualized,
         n_trials_raw=n_raw,
         n_trials_effective=n_trials_effective,
         sharpe_variance_across_trials=sr_variance,
     )
 
 
-def effective_n_trials(returns: pd.DataFrame, distance_threshold: float) -> int:
+def effective_n_trials(
+    returns: pd.DataFrame, distance_threshold: float, min_effective_trials: int
+) -> int:
     """Número efectivo de pruebas independientes, por clustering de correlación.
 
     Método: se calcula la matriz de correlación de Pearson entre las
@@ -238,6 +268,11 @@ def effective_n_trials(returns: pd.DataFrame, distance_threshold: float) -> int:
             cluster: N_efectivo = 1). Sin valor por defecto a propósito:
             no hay un umbral "correcto" universal, es una decisión de
             cuánta correlación hace que dos pruebas cuenten como la misma.
+        min_effective_trials: mínimo por debajo del cual se emite un
+            `logging.warning`. No modifica el valor devuelto — esta función
+            informa, no corrige. Quien decide qué hacer con una rejilla
+            colapsada es `fxlab.validation.report.evaluate_experiment`.
+            Sin valor por defecto: ver `report.MIN_EFFECTIVE_TRIALS`.
 
     Returns:
         Número de clusters (pruebas efectivas), entre 1 y N.
@@ -258,6 +293,12 @@ def effective_n_trials(returns: pd.DataFrame, distance_threshold: float) -> int:
     """
     n = returns.shape[1]
     if n < 2:
+        _warn_if_collapsed(
+            n_effective=n,
+            n_raw=n,
+            mean_abs_corr=float("nan"),
+            min_effective_trials=min_effective_trials,
+        )
         return n
 
     corr = returns.corr().to_numpy()
@@ -269,4 +310,33 @@ def effective_n_trials(returns: pd.DataFrame, distance_threshold: float) -> int:
     condensed = squareform(distance, checks=False)
     linkage_matrix = hierarchy.linkage(condensed, method="average")
     cluster_labels = hierarchy.fcluster(linkage_matrix, t=distance_threshold, criterion="distance")
-    return int(len(set(cluster_labels.tolist())))
+    n_effective = int(len(set(cluster_labels.tolist())))
+
+    off_diagonal = corr[~np.eye(n, dtype=bool)]
+    _warn_if_collapsed(
+        n_effective=n_effective,
+        n_raw=n,
+        mean_abs_corr=float(np.abs(off_diagonal).mean()),
+        min_effective_trials=min_effective_trials,
+    )
+    return n_effective
+
+
+def _warn_if_collapsed(
+    n_effective: int, n_raw: int, mean_abs_corr: float, min_effective_trials: int
+) -> None:
+    """Avisa cuando la rejilla se colapsa por debajo del mínimo de pruebas
+    efectivas: es el caso en que el DSR deja de deflactar y se vuelve
+    permisivo justo cuando la rejilla es más redundante."""
+    if n_effective >= min_effective_trials:
+        return
+    logger.warning(
+        "rejilla colapsada: %d configuraciones brutas -> %d pruebas efectivas "
+        "(mínimo %d, correlación media |r| = %.3f). Con tan pocas pruebas "
+        "independientes el término de deflación del DSR es nulo o casi nulo, "
+        "así que un DSR alto NO corrige el sesgo de selección",
+        n_raw,
+        n_effective,
+        min_effective_trials,
+        mean_abs_corr,
+    )

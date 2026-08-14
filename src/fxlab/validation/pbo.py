@@ -42,9 +42,14 @@ class PBOResult:
     pbo: float
     logits: list[float]
     """Distribución completa de λ, una por combinación in-sample/out-of-sample."""
-    is_oos_degradation: list[float]
+    is_oos_degradation_non_annualized: list[float]
     """Sharpe in-sample menos Sharpe out-of-sample de la configuración
-    ganadora, una por combinación (positivo = peor fuera de muestra)."""
+    ganadora, una por combinación (positivo = peor fuera de muestra).
+
+    Sin anualizar: ambos lados los calcula `_column_sharpe` a partir de los
+    retornos, así que el módulo es internamente consistente. El sufijo va
+    en el nombre para que no se compare por error con
+    `fxlab.sweep.engine.TrialResult.sharpe_annualized`."""
     n_combinations: int
     s: int
     n_configurations: int
@@ -144,7 +149,7 @@ def probability_of_backtest_overfitting(returns: pd.DataFrame, s: int) -> PBORes
     return PBOResult(
         pbo=pbo,
         logits=logits,
-        is_oos_degradation=degradations,
+        is_oos_degradation_non_annualized=degradations,
         n_combinations=len(logits),
         s=s,
         n_configurations=n,

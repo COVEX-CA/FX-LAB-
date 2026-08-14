@@ -108,10 +108,14 @@ class WalkForwardFoldResult:
     best_params: SweepParams | None
     train_result: TrialResult | None
     test_result: TrialResult | None
-    degradation: float | None
+    sharpe_degradation_annualized: float | None
     """Sharpe de entrenamiento menos Sharpe de prueba de `best_params`
     (positivo = peor fuera de la ventana de entrenamiento). `None` si el
-    pliegue no tiene una combinación ganadora evaluable."""
+    pliegue no tiene una combinación ganadora evaluable.
+
+    Anualizado: es una diferencia entre dos `TrialResult.sharpe_annualized`,
+    ambos con el mismo `freq`, así que la resta es consistente. NO es
+    comparable con el Sharpe sin anualizar de `fxlab.validation.deflated_sharpe`."""
     note: str | None
     """Motivo por el que el pliegue no produjo un resultado evaluable, p.ej.
     "ninguna combinación tuvo operaciones en entrenamiento"."""
@@ -126,8 +130,12 @@ class WalkForwardResult:
     folds: list[WalkForwardFoldResult]
 
     @property
-    def mean_degradation(self) -> float | None:
-        values = [f.degradation for f in self.folds if f.degradation is not None]
+    def mean_sharpe_degradation_annualized(self) -> float | None:
+        values = [
+            f.sharpe_degradation_annualized
+            for f in self.folds
+            if f.sharpe_degradation_annualized is not None
+        ]
         return sum(values) / len(values) if values else None
 
 
@@ -142,7 +150,7 @@ def run_walk_forward(
     step: int,
     mode: WindowMode,
     freq: str,
-    selection_metric: str = "sharpe",
+    selection_metric: str = "sharpe_annualized",
 ) -> WalkForwardResult:
     """Walk-forward optimization sobre la rejilla `grid`, restringido a desarrollo.
 
@@ -169,7 +177,8 @@ def run_walk_forward(
         freq: frecuencia de barra para VectorBT, ver
             `fxlab.sweep.engine.run_trial`.
         selection_metric: campo de `TrialResult` usado para elegir la
-            combinación ganadora en entrenamiento. Por defecto "sharpe":
+            combinación ganadora en entrenamiento. Por defecto
+            "sharpe_annualized":
             es el criterio canónico de este proyecto y coincide con el que
             usa el propio PBO (`fxlab.validation.pbo`) para su ranking
             in-sample/out-of-sample.
@@ -184,7 +193,13 @@ def run_walk_forward(
             f"train_size, test_size y step deben ser >= 1, se recibió "
             f"train_size={train_size}, test_size={test_size}, step={step}"
         )
-    valid_metrics = {"total_return", "sharpe", "profit_factor", "win_rate", "expectancy"}
+    valid_metrics = {
+        "total_return",
+        "sharpe_annualized",
+        "profit_factor",
+        "win_rate",
+        "expectancy",
+    }
     if selection_metric not in valid_metrics:
         raise ValueError(
             f"selection_metric debe ser una de {sorted(valid_metrics)}, "
@@ -226,7 +241,7 @@ def run_walk_forward(
                     best_params=None,
                     train_result=None,
                     test_result=None,
-                    degradation=None,
+                    sharpe_degradation_annualized=None,
                     note="ninguna combinación tuvo una métrica evaluable en entrenamiento",
                 )
             )
@@ -236,8 +251,11 @@ def run_walk_forward(
 
         degradation: float | None = None
         note: str | None = None
-        if best_train_result.sharpe is not None and test_result.sharpe is not None:
-            degradation = best_train_result.sharpe - test_result.sharpe
+        if (
+            best_train_result.sharpe_annualized is not None
+            and test_result.sharpe_annualized is not None
+        ):
+            degradation = best_train_result.sharpe_annualized - test_result.sharpe_annualized
         else:
             note = "la combinación ganadora no tuvo operaciones en prueba"
 
@@ -247,7 +265,7 @@ def run_walk_forward(
                 best_params=best_params,
                 train_result=best_train_result,
                 test_result=test_result,
-                degradation=degradation,
+                sharpe_degradation_annualized=degradation,
                 note=note,
             )
         )

@@ -24,7 +24,7 @@ def test_s_equals_16_evaluates_exactly_c_16_8_combinations() -> None:
     result = probability_of_backtest_overfitting(returns, s=16)
     assert result.n_combinations == math.comb(16, 8) == 12870
     assert len(result.logits) == 12870
-    assert len(result.is_oos_degradation) == 12870
+    assert len(result.is_oos_degradation_non_annualized) == 12870
 
 
 def test_rejects_odd_s() -> None:

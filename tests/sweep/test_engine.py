@@ -84,7 +84,7 @@ def test_run_trial_with_no_possible_exit_registers_zero_trades() -> None:
     assert result.n_trades == 0
     assert result.note == "sin operaciones"
     assert result.total_return is None
-    assert result.sharpe is None
+    assert result.sharpe_annualized is None
     assert result.max_drawdown is None
     assert result.profit_factor is None
     assert result.win_rate is None

@@ -90,7 +90,7 @@ def test_deflated_sharpe_ratio_with_a_single_trial_has_no_selection_correction()
 
     result = deflated_sharpe_ratio(
         returns,
-        all_trial_sharpes=[sharpe_stats_from_returns(returns).sharpe],
+        all_trial_sharpes=[sharpe_stats_from_returns(returns).sharpe_non_annualized],
         n_trials_effective=1,
     )
 
@@ -100,7 +100,7 @@ def test_deflated_sharpe_ratio_with_a_single_trial_has_no_selection_correction()
     # Sin deflactar por selección, el DSR se reduce al PSR frente a benchmark 0.
     stats = sharpe_stats_from_returns(returns)
     expected = probabilistic_sharpe_ratio(
-        stats.sharpe, stats.n, stats.skewness, stats.kurtosis, 0.0
+        stats.sharpe_non_annualized, stats.n, stats.skewness, stats.kurtosis, 0.0
     )
     assert result.dsr == pytest.approx(expected)
 
@@ -127,5 +127,7 @@ def test_sharpe_is_not_annualized_and_matches_vectorbt_relationship() -> None:
     raw_stats = sharpe_stats_from_returns(portfolio.returns())
 
     ann_factor = math.sqrt(pd.Timedelta("365D") / pd.Timedelta(freq))
-    assert annualized_sharpe == pytest.approx(raw_stats.sharpe * ann_factor, rel=1e-6)
-    assert raw_stats.sharpe != pytest.approx(annualized_sharpe, rel=1e-3)
+    assert annualized_sharpe == pytest.approx(
+        raw_stats.sharpe_non_annualized * ann_factor, rel=1e-6
+    )
+    assert raw_stats.sharpe_non_annualized != pytest.approx(annualized_sharpe, rel=1e-3)

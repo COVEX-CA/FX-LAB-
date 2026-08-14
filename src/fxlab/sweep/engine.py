@@ -45,11 +45,20 @@ class SweepParams:
 class TrialResult:
     """Resultado de evaluar una `SweepParams`. `n_trades=0` es un resultado
     válido, no un error: `total_return`..`expectancy` quedan en `None` y
-    `note` explica el motivo."""
+    `note` explica el motivo.
+
+    El Sharpe lleva el sufijo `_annualized` en el nombre a propósito: es el
+    que devuelve `vectorbt.Portfolio.sharpe_ratio()`, ya multiplicado por
+    `sqrt(periodos/año)` según `freq`. `fxlab.validation` trabaja con el
+    Sharpe SIN anualizar (sufijo `_non_annualized`), y mezclar ambos no
+    produce ningún error visible, solo un resultado equivocado: en H1 el
+    factor es `sqrt(8760)` ≈ 93.6. La convención va en el nombre para que
+    la mezcla sea imposible de cometer en silencio.
+    """
 
     n_trades: int
     total_return: float | None
-    sharpe: float | None
+    sharpe_annualized: float | None
     max_drawdown: float | None
     profit_factor: float | None
     win_rate: float | None
@@ -161,7 +170,7 @@ def run_trial(
         return TrialResult(
             n_trades=0,
             total_return=None,
-            sharpe=None,
+            sharpe_annualized=None,
             max_drawdown=None,
             profit_factor=None,
             win_rate=None,
@@ -173,7 +182,7 @@ def run_trial(
     return TrialResult(
         n_trades=n_trades,
         total_return=float(portfolio.total_return()),
-        sharpe=sharpe if math.isfinite(sharpe) else None,
+        sharpe_annualized=sharpe if math.isfinite(sharpe) else None,
         max_drawdown=float(portfolio.max_drawdown()),
         profit_factor=float(portfolio.trades.profit_factor()),
         win_rate=float(portfolio.trades.win_rate()),
@@ -236,7 +245,7 @@ def run_sweep(
             params=params.as_dict(),
             n_trades=result.n_trades,
             total_return=result.total_return,
-            sharpe=result.sharpe,
+            sharpe_annualized=result.sharpe_annualized,
             max_drawdown=result.max_drawdown,
             profit_factor=result.profit_factor,
             win_rate=result.win_rate,
