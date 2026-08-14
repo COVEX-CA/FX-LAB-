@@ -1,12 +1,46 @@
 from __future__ import annotations
 
+import shutil
+import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
 
 from fxlab.sweep.registry import TrialRegistry, current_code_version, hash_dataset
+
+
+def _open_with_retry(db_path: Path, timeout: float = 15.0) -> TrialRegistry:
+    """Abre el registro reintentando ante `OperationalError` transitorio.
+
+    Por qué hace falta: en Windows, `Popen.kill()` es `TerminateProcess`, que
+    libera los handles de fichero del hijo de forma **asíncrona**. Si el padre
+    reabre la base microsegundos después, la apertura del `-wal`/`-shm` puede
+    chocar con una sharing violation, que SQLite traduce a `SQLITE_IOERR`
+    ("disk I/O error"). Es una carrera de liberación de handles del sistema de
+    ficheros, no un fallo de recuperación: el estado en disco es recuperable
+    (lo demuestra `test_registry_recovers_from_a_wal_without_a_valid_shm`, que
+    no depende de ningún proceso). En Linux la ventana no existe.
+
+    Esto NO es un `skip` disfrazado: si se agota el plazo, el test falla. La
+    garantía se sigue verificando en ambos sistemas; lo único que se concede
+    es el tiempo que el sistema operativo tarda en soltar los ficheros.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return TrialRegistry(db_path)
+        except sqlite3.OperationalError as exc:
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    f"el registro no se pudo reabrir en {timeout}s tras el kill "
+                    f"({exc}). Agotar este plazo significa que la recuperación WAL "
+                    "está realmente rota, no que el sistema de ficheros tardara en "
+                    "soltar los handles."
+                ) from exc
+            time.sleep(0.1)
 
 
 def _record(reg: TrialRegistry, experiment_id: str, i: int, *, n_trades: int = 0) -> None:
@@ -120,21 +154,68 @@ def test_registry_survives_hard_kill_mid_write(tmp_path: Path) -> None:
     )
     written = 0
     assert proc.stdout is not None
-    for line in proc.stdout:
-        if line.startswith("WROTE"):
-            written = int(line.split()[1]) + 1
-            if written >= 4:
-                proc.kill()
-                break
+    try:
+        for line in proc.stdout:
+            if line.startswith("WROTE"):
+                written = int(line.split()[1]) + 1
+                if written >= 4:
+                    proc.kill()
+                    break
+    finally:
+        proc.stdout.close()  # suelta el pipe antes de esperar al hijo
     proc.wait(timeout=10)
 
     assert written >= 4  # el hijo llegó a escribir al menos las filas esperadas
 
-    reg = TrialRegistry(db_path)
+    # Lo escrito vive en el -wal: el fichero principal ni siquiera tiene la
+    # tabla todavía. Reabrir aquí ejercita la recuperación WAL de verdad.
+    reg = _open_with_retry(db_path)
     count = reg.count_trials("crash")
     reg.close()
 
     assert count == written
+
+
+def test_registry_recovers_from_a_wal_without_a_valid_shm(tmp_path: Path) -> None:
+    """La garantía de recuperación, sin depender de matar ningún proceso.
+
+    Reproduce a nivel de ficheros el estado que deja una interrupción dura —
+    un `-wal` con transacciones confirmadas y un `-shm` inservible — y
+    comprueba que al reabrir se recuperan todas las filas. El `-shm` no
+    guarda datos: es un índice compartido que SQLite reconstruye desde el
+    `-wal`, y es justo el fichero que Windows deja en mal estado tras un
+    kill duro. Este test es determinista y se comporta igual en todos los
+    sistemas, así que si algún día la recuperación se rompe de verdad,
+    falla aquí y no en una carrera de handles.
+    """
+    source = tmp_path / "live"
+    db_path = source / "trials.db"
+    registry = TrialRegistry(db_path)
+    for i in range(5):
+        _record(registry, "crash", i)
+
+    # Copia del estado en disco CON la conexión aún abierta: es la foto que
+    # habría quedado si el proceso muriera en este instante. No se cierra la
+    # conexión antes de copiar porque `close()` hace checkpoint y volcaría el
+    # -wal al fichero principal, que es exactamente lo que no queremos probar.
+    crashed = tmp_path / "crashed"
+    crashed.mkdir()
+    for suffix in ("", "-wal", "-shm"):
+        origin = Path(str(db_path) + suffix)
+        if origin.exists():
+            shutil.copy2(origin, crashed / origin.name)
+    registry.close()
+
+    copied_db = crashed / "trials.db"
+    assert (crashed / "trials.db-wal").stat().st_size > 0, (
+        "el -wal copiado está vacío: la prueba no estaría ejercitando la recuperación"
+    )
+    # Sin el -shm, que es lo que Windows deja inservible.
+    (crashed / "trials.db-shm").unlink(missing_ok=True)
+
+    recovered = TrialRegistry(copied_db)
+    assert recovered.count_trials("crash") == 5
+    recovered.close()
 
 
 def test_hash_dataset_is_stable_and_sensitive_to_content(tmp_path: Path) -> None:
