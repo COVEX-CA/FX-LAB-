@@ -68,6 +68,11 @@ def _trials_frame(records: list[dict[str, object]], metric_values: np.ndarray) -
         {
             "id": range(1, len(records) + 1),
             "experiment_id": "exp-test",
+            # como el registro real: created_at es la hora de escritura (una
+            # fecha posterior al corte de holdout). Estar aquí es lo que hace
+            # que el test de "ninguna fecha de holdout" detecte una fuga si el
+            # informe llegara a imprimirla.
+            "created_at": "2026-08-14T18:02:40+00:00",
             "symbol": "EUR/USD",
             "interval": "1HOUR",
             "partition": "development",
@@ -493,3 +498,24 @@ def test_report_shows_the_coverage_banner_above_the_verdict(tmp_path: Path) -> N
     # arriba del todo, antes del veredicto
     assert 'id="data-coverage"' in body
     assert body.index('id="data-coverage"') < body.index('id="verdict"')
+
+
+# --- la tabla de ranking no filtra metadatos de generación -----------------
+
+
+def test_ranking_table_excludes_generation_metadata_columns() -> None:
+    # created_at (marca de generación, fecha posterior al holdout), data_hash y
+    # code_version son procedencia, no configuración: no van en la tabla.
+    inputs = _inputs(verdict=_verdict_report(Verdict.CANDIDATO))
+    ranked = rank_configurations(inputs.trials, _METRIC, inputs.verdict, top_n=10)
+    for column in ("created_at", "data_hash", "code_version"):
+        assert column not in ranked.table.columns
+
+
+def test_report_body_never_prints_the_generation_timestamp(tmp_path: Path) -> None:
+    # El fixture trae un created_at de 2026 (como el registro real). Si el
+    # informe lo imprimiera, sería una marca de generación y una fecha del
+    # holdout a la vez. No debe aparecer en ninguna parte del cuerpo.
+    output = tmp_path / "no_created_at.html"
+    build_report(_inputs(verdict=_verdict_report(Verdict.CANDIDATO)), output)
+    assert "2026-08-14" not in _body(output.read_text(encoding="utf-8"))

@@ -602,6 +602,16 @@ class RankedConfigurations:
     grid_collapsed: bool
 
 
+# Columnas del registro que NO se muestran en la tabla de ranking. `created_at`
+# es la crítica: es la hora en que se escribió la fila (siempre "ahora", una
+# fecha posterior al corte de holdout), y el informe tiene prohibido imprimir
+# marcas de tiempo de generación o cualquier fecha reservada — dibujarla aquí
+# violaba ambas reglas. `data_hash` y `code_version` son metadatos de
+# procedencia que solo ensucian una tabla por configuración (la procedencia ya
+# va en el pie del informe).
+_RANKING_METADATA_COLUMNS = ("created_at", "data_hash", "code_version")
+
+
 def rank_configurations(
     trials: pd.DataFrame, metric: str, verdict: VerdictReport, top_n: int
 ) -> RankedConfigurations:
@@ -609,8 +619,9 @@ def rank_configurations(
     ordered = trials.assign(_metric=pd.to_numeric(trials[metric], errors="coerce")).sort_values(
         "_metric", ascending=False, na_position="last"
     )
+    drop = ["_metric", *(c for c in _RANKING_METADATA_COLUMNS if c in ordered.columns)]
     return RankedConfigurations(
-        table=ordered.head(top_n).drop(columns="_metric"),
+        table=ordered.head(top_n).drop(columns=drop),
         verdict=verdict.verdict,
         n_trials_raw=verdict.n_trials_raw,
         n_trials_effective=verdict.n_trials_effective,
