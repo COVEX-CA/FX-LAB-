@@ -42,7 +42,7 @@ strict = true
 files = ["src"]
 
 [[tool.mypy.overrides]]
-module = ["dukascopy_python.*", "pyarrow.*", "vectorbt.*", "scipy.*"]
+module = ["dukascopy_python.*", "pyarrow.*", "vectorbt.*", "scipy.*", "plotly.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
