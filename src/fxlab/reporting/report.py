@@ -38,6 +38,7 @@ import pandas as pd
 import plotly.offline as pyo
 
 from fxlab.reporting.sections import (
+    data_coverage_banner,
     equity_curves_section,
     grid_diagnostics_section,
     parameter_surface_section,
@@ -210,10 +211,13 @@ def build_report(inputs: ReportInputs, output_path: Path) -> Path:
     ranked = rank_configurations(trials, inputs.metric, inputs.verdict, TOP_CONFIGURATIONS)
     min_effective = inputs.evidence.min_effective_trials
 
-    # El orden de esta lista es la estructura obligatoria del informe: el
-    # veredicto va antes que cualquier figura, las curvas de equity al final.
+    # El orden de esta lista es la estructura obligatoria del informe: la
+    # cobertura de datos abre (si el barrido no cubre desarrollo entero, hay
+    # que verlo antes que ningún número), el veredicto va antes que cualquier
+    # figura, y las curvas de equity al final.
     body = "".join(
         [
+            data_coverage_banner(trials),
             verdict_section(inputs.verdict, min_effective),
             grid_diagnostics_section(
                 inputs.evidence.all_returns,

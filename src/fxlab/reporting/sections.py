@@ -39,6 +39,7 @@ import plotly.io as pio
 from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform
 
+from fxlab.split import DEVELOPMENT_END, DEVELOPMENT_START
 from fxlab.validation.pbo import PBOResult
 from fxlab.validation.report import Verdict, VerdictReport
 from fxlab.validation.walk_forward import WalkForwardResult
@@ -98,6 +99,52 @@ def _symmetric_limit(values: np.ndarray) -> float:
 
 def _esc(value: object) -> str:
     return html.escape(str(value))
+
+
+# --- 2.0 Cobertura de datos ------------------------------------------------
+
+_COVERAGE_TOLERANCE = pd.Timedelta(days=31)
+"""Margen para decidir si un barrido cubre desarrollo entero. La primera y la
+última barra reales caen a días del borde de la partición (festivos, fines de
+semana, inicio del histórico disponible), no exactamente en él. Un mes absorbe
+ese margen de disponibilidad sin dejar pasar un subperíodo deliberado, que
+siempre se aparta meses o años del borde."""
+
+
+def data_coverage_banner(trials: pd.DataFrame) -> str:
+    """Aviso, arriba del todo, de qué tramo del histórico barrió el experimento.
+
+    Si el barrido no cubre la partición de desarrollo entera, lo dice de
+    forma prominente (no en una nota al pie): elegir un subperíodo es una
+    forma de selección, y si pasa desapercibida es sesgo invisible. Cuando sí
+    la cubre, deja una línea neutra de contexto. Nunca imprime el corte de
+    holdout: el fin de desarrollo se muestra como su última fecha inclusive.
+    """
+    if not {"start_date", "end_date"}.issubset(trials.columns):
+        return ""
+
+    swept_start = pd.to_datetime(trials["start_date"], utc=True).min()
+    swept_end = pd.to_datetime(trials["end_date"], utc=True).max()
+
+    full_span = f"{DEVELOPMENT_START.date()} … {DEVELOPMENT_END.date()}"
+    swept = f"{swept_start.date()} … {swept_end.date()}"
+
+    covers_start = swept_start <= DEVELOPMENT_START + _COVERAGE_TOLERANCE
+    covers_end = swept_end >= DEVELOPMENT_END - _COVERAGE_TOLERANCE
+    if covers_start and covers_end:
+        return (
+            f'<p class="note" id="data-coverage">Cobertura de datos: el barrido abarca '
+            f"la partición de desarrollo completa ({full_span}).</p>"
+        )
+
+    return (
+        '<div class="collapsed-warning" id="data-coverage"><strong>Este barrido no '
+        "cubre la partición de desarrollo completa.</strong> Se ha barrido solo "
+        f"<strong>{swept}</strong>, un subconjunto de desarrollo ({full_span}). "
+        "Elegir un subperíodo es en sí mismo una forma de selección: lo que se "
+        "concluye abajo vale para ese tramo, no para todo el histórico de "
+        "desarrollo, y no es directamente comparable con un barrido completo.</div>"
+    )
 
 
 # --- 2.1 Veredicto ---------------------------------------------------------

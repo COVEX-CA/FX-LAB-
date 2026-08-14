@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 """CLI para generar el informe HTML de un experimento ya registrado.
 
-Sin lógica de decisión: lee el registro y la matriz de retornos, delega el
-veredicto en `fxlab.validation` y el dibujo en `fxlab.reporting`. Este
-script no decide nada, no ejecuta backtests y no toca el holdout.
+Sin lógica de decisión: lee del registro tanto las métricas como la matriz
+de retornos (`TrialRegistry.load_returns_matrix`), delega el veredicto en
+`fxlab.validation` y el dibujo en `fxlab.reporting`. Este script no decide
+nada, no ejecuta backtests y no toca el holdout. No necesita ningún fichero
+externo de retornos: el barrido ya los persiste en el propio `trials.db`.
 
 Limitación conocida: el walk-forward no lo persiste ninguna fase del
 proyecto, así que desde línea de comandos el informe se genera con la
@@ -18,8 +20,6 @@ import argparse
 import logging
 from pathlib import Path
 
-import pandas as pd
-
 from fxlab.reporting import ReportInputs, build_report
 from fxlab.sweep.registry import TrialRegistry
 from fxlab.validation.pbo import probability_of_backtest_overfitting
@@ -33,15 +33,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("experiment_id", help="identificador del experimento en el registro")
     parser.add_argument("--registry", type=Path, required=True, help="ruta a trials.db")
-    parser.add_argument(
-        "--returns",
-        type=Path,
-        required=True,
-        help=(
-            "parquet con la matriz T×N de retornos; las columnas deben ser los "
-            "id de trial del registro, como cadenas y en el mismo orden"
-        ),
-    )
     parser.add_argument("--output", type=Path, required=True, help="ruta del HTML de salida")
     parser.add_argument(
         "--metric",
@@ -51,7 +42,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--target",
         required=True,
-        help="columna de --returns (id de trial) de la configuración evaluada",
+        help="id de trial (columna de la matriz de retornos) de la configuración evaluada",
     )
     # Sin valores por defecto: son criterios de calidad, y el proyecto exige
     # que cada experimento los declare explícitamente (ver AGENTS.md y los
@@ -68,8 +59,14 @@ def main(argv: list[str] | None = None) -> None:
 
     with TrialRegistry(args.registry) as registry:
         trials = registry.load_experiment(args.experiment_id)
+        all_returns = registry.load_returns_matrix(args.experiment_id)
 
-    all_returns = pd.read_parquet(args.returns)
+    if args.target not in all_returns.columns:
+        raise SystemExit(
+            f"--target {args.target!r} no es un id de trial del experimento "
+            f"{args.experiment_id!r}: elige uno de las columnas de la matriz de retornos"
+        )
+
     logger.warning(
         "el walk-forward no está persistido: el informe se genera con esa sección "
         "vacía. Para incluirla, llama a fxlab.reporting.build_report desde código."
