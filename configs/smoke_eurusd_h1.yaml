@@ -1,0 +1,26 @@
+# Configuración de PRUEBA DE TUBERÍA (smoke test), no un experimento real.
+#
+# Objetivo: comprobar que descarga -> barrido -> informe funciona de punta a
+# punta con datos reales. La rejilla es pequeña a propósito (36 combinaciones)
+# y se barre solo un subperíodo de desarrollo (2015-2016), así que el informe
+# mostrará el aviso de cobertura de datos. No sirve para concluir nada sobre el
+# edge de la estrategia.
+#
+# commission: 0.00007 es orientativa (comisión típica de un bróker ECN sobre
+# EUR/USD). El spread NO se configura aquí: sale de la diferencia bid/ask real.
+
+experiment_id: smoke_eurusd_h1
+symbol: "EUR/USD"
+interval: "1HOUR"
+commission: 0.00007
+
+grid:
+  slow_ma: [sma, ema]      # 2 tipos de media (el eje "SMA vs EMA")
+  slow_period: [50, 100, 150]  # 3 períodos lentos
+  fast_ma: [ema]           # media rápida fija
+  fast_period: [10, 20, 30]    # 3 períodos rápidos
+  n_bars: [5, 10]          # 2 horizontes de pullback
+  use_adx_filter: [false]  # filtro ADX apagado en esta prueba
+  adx_threshold: [25.0]
+  adx_period: [14]
+# Total: 2 * 3 * 1 * 3 * 2 * 1 * 1 * 1 = 36 combinaciones
