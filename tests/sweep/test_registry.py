@@ -8,8 +8,18 @@ import time
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from fxlab.sweep.registry import TrialRegistry, current_code_version, hash_dataset
+
+# Todos los trials de un mismo experimento comparten el índice de retornos
+# (comparten data_hash), así que las series de prueba tienen longitud fija.
+_RETURNS_INDEX = pd.date_range("2024-01-01", periods=4, freq="1h", tz="UTC")
+
+
+def _returns(*, first: float = 0.0) -> pd.Series:
+    """Serie de retornos de prueba, longitud fija. `first` la hace distinguible."""
+    return pd.Series([first, 0.01, -0.01, 0.02], index=_RETURNS_INDEX)
 
 
 def _open_with_retry(db_path: Path, timeout: float = 15.0) -> TrialRegistry:
@@ -43,9 +53,9 @@ def _open_with_retry(db_path: Path, timeout: float = 15.0) -> TrialRegistry:
             time.sleep(0.1)
 
 
-def _record(reg: TrialRegistry, experiment_id: str, i: int, *, n_trades: int = 0) -> None:
+def _record(reg: TrialRegistry, experiment_id: str, i: int, *, n_trades: int = 0) -> int:
     idx = pd.Timestamp("2024-01-01", tz="UTC")
-    reg.record_trial(
+    return reg.record_trial(
         experiment_id=experiment_id,
         symbol="EUR/USD",
         interval="1HOUR",
@@ -62,6 +72,7 @@ def _record(reg: TrialRegistry, experiment_id: str, i: int, *, n_trades: int = 0
         win_rate=0.5 if n_trades else None,
         expectancy=0.001 if n_trades else None,
         note=None if n_trades else "sin operaciones",
+        returns=_returns(first=0.001 * i),
     )
 
 
@@ -136,13 +147,15 @@ def test_registry_survives_hard_kill_mid_write(tmp_path: Path) -> None:
         "import pandas as pd\n"
         f"reg = TrialRegistry(Path({str(db_path)!r}))\n"
         "idx = pd.Timestamp('2024-01-01', tz='UTC')\n"
+        "ret = pd.Series([0.0, 0.01, -0.01], "
+        "index=pd.date_range('2024-01-01', periods=3, freq='1h', tz='UTC'))\n"
         "for i in range(20):\n"
         "    reg.record_trial(\n"
         "        experiment_id='crash', symbol='EUR/USD', interval='1HOUR',\n"
         "        partition='development', start_date=idx, end_date=idx,\n"
         "        data_hash='h', params={'i': i}, n_trades=0, total_return=None,\n"
         "        sharpe_annualized=None, max_drawdown=None, profit_factor=None,\n"
-        "        win_rate=None, expectancy=None, note='sin operaciones',\n"
+        "        win_rate=None, expectancy=None, note='sin operaciones', returns=ret,\n"
         "    )\n"
         "    print(f'WROTE {i}', flush=True)\n"
         "    time.sleep(0.03)\n"
@@ -226,3 +239,151 @@ def test_hash_dataset_is_stable_and_sensitive_to_content(tmp_path: Path) -> None
 
     assert hash_dataset(df_a) == hash_dataset(df_b)
     assert hash_dataset(df_a) != hash_dataset(df_c)
+
+
+def test_a_trial_row_cannot_exist_without_its_returns_series(tmp_path: Path) -> None:
+    """La invariante que justifica meter los retornos en la misma base: no
+    puede colarse una fila de trial sin su serie de retornos. Se comprueba en
+    los dos únicos puntos por donde podría pasar."""
+    db_path = tmp_path / "trials.db"
+    idx = pd.Timestamp("2024-01-01", tz="UTC")
+    with TrialRegistry(db_path) as reg:
+        # 1) A nivel de API: omitir `returns` es un error, no una fila a medias.
+        with pytest.raises(TypeError):
+            reg.record_trial(  # type: ignore[call-arg]
+                experiment_id="e",
+                symbol="EUR/USD",
+                interval="1HOUR",
+                partition="development",
+                start_date=idx,
+                end_date=idx,
+                data_hash="h",
+                params={"i": 0},
+                n_trades=0,
+                total_return=None,
+                sharpe_annualized=None,
+                max_drawdown=None,
+                profit_factor=None,
+                win_rate=None,
+                expectancy=None,
+                note="sin operaciones",
+            )
+        # 2) A nivel de esquema: `returns_values` es NOT NULL, así que un
+        #    INSERT directo sin retornos lo rechaza la propia base de datos.
+        #    La invariante es estructural, no una convención del código.
+        with pytest.raises(sqlite3.IntegrityError):
+            reg._conn.execute(
+                "INSERT INTO trials (experiment_id, created_at, symbol, interval, "
+                "partition, start_date, end_date, data_hash, params_json, n_trades) "
+                "VALUES ('e', 'now', 's', 'i', 'p', 'd', 'd', 'h', '{}', 0)"
+            )
+
+
+def test_record_trial_returns_the_assigned_autoincrement_id(tmp_path: Path) -> None:
+    db_path = tmp_path / "trials.db"
+    with TrialRegistry(db_path) as reg:
+        first = _record(reg, "exp", 0)
+        second = _record(reg, "exp", 1)
+
+    assert isinstance(first, int)
+    assert second == first + 1
+
+
+def test_load_returns_matrix_columns_are_trial_ids_and_round_trip_values(tmp_path: Path) -> None:
+    db_path = tmp_path / "trials.db"
+    with TrialRegistry(db_path) as reg:
+        ids = [_record(reg, "exp", i, n_trades=3) for i in range(3)]
+        trials = reg.load_experiment("exp")
+        matrix = reg.load_returns_matrix("exp")
+
+    # columnas = id de trial (como cadena), en el mismo orden que load_experiment
+    assert list(matrix.columns) == [str(i) for i in trials["id"]]
+    assert list(matrix.columns) == [str(i) for i in ids]
+    # el índice UTC común se conserva intacto
+    assert matrix.index.equals(_RETURNS_INDEX)
+    # valores exactos, sin transformación: una sola fuente de verdad
+    import numpy as np
+
+    for i, trial_id in enumerate(ids):
+        np.testing.assert_array_equal(
+            matrix[str(trial_id)].to_numpy(), _returns(first=0.001 * i).to_numpy()
+        )
+
+
+def test_returns_stay_coherent_with_trials_after_unclean_disconnect(tmp_path: Path) -> None:
+    # cada record_trial confirma trial+retornos de forma atómica; abandonar la
+    # conexión sin cerrarla no debe dejar trials sin su matriz de retornos.
+    db_path = tmp_path / "trials.db"
+    reg = TrialRegistry(db_path)
+    for i in range(5):
+        _record(reg, "exp", i, n_trades=3)
+    del reg  # sin close(): simula un proceso que muere sin apagado limpio
+
+    reopened = TrialRegistry(db_path)
+    trials = reopened.load_experiment("exp")
+    matrix = reopened.load_returns_matrix("exp")
+    reopened.close()
+
+    assert len(trials) == 5
+    assert list(matrix.columns) == [str(i) for i in trials["id"]]
+
+
+def test_record_trial_rejects_returns_length_inconsistent_with_experiment(tmp_path: Path) -> None:
+    db_path = tmp_path / "trials.db"
+    idx = pd.Timestamp("2024-01-01", tz="UTC")
+    with TrialRegistry(db_path) as reg:
+        _record(reg, "exp", 0, n_trades=3)  # fija el índice del experimento a 4 barras
+        wrong = pd.Series(
+            [0.0, 0.0],
+            index=pd.date_range("2024-01-01", periods=2, freq="1h", tz="UTC"),
+        )
+        with pytest.raises(ValueError, match="no casan"):
+            reg.record_trial(
+                experiment_id="exp",
+                symbol="EUR/USD",
+                interval="1HOUR",
+                partition="development",
+                start_date=idx,
+                end_date=idx,
+                data_hash="deadbeef",  # mismo data_hash, longitud incoherente
+                params={"i": 99},
+                n_trades=0,
+                total_return=None,
+                sharpe_annualized=None,
+                max_drawdown=None,
+                profit_factor=None,
+                win_rate=None,
+                expectancy=None,
+                note="sin operaciones",
+                returns=wrong,
+            )
+        # la fila incoherente no llegó a escribirse
+        assert reg.count_trials("exp") == 1
+
+
+def test_load_returns_matrix_rejects_mixed_data_hash(tmp_path: Path) -> None:
+    db_path = tmp_path / "trials.db"
+    idx = pd.Timestamp("2024-01-01", tz="UTC")
+    with TrialRegistry(db_path) as reg:
+        _record(reg, "exp", 0, n_trades=3)  # data_hash "deadbeef"
+        reg.record_trial(
+            experiment_id="exp",
+            symbol="EUR/USD",
+            interval="1HOUR",
+            partition="development",
+            start_date=idx,
+            end_date=idx,
+            data_hash="otro",  # datos distintos: no forman una única matriz
+            params={"i": 1},
+            n_trades=0,
+            total_return=None,
+            sharpe_annualized=None,
+            max_drawdown=None,
+            profit_factor=None,
+            win_rate=None,
+            expectancy=None,
+            note="sin operaciones",
+            returns=_returns(),
+        )
+        with pytest.raises(ValueError, match="data_hash"):
+            reg.load_returns_matrix("exp")

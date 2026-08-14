@@ -11,7 +11,7 @@ from __future__ import annotations
 import itertools
 import math
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from functools import partial
 
 import pandas as pd
@@ -64,6 +64,12 @@ class TrialResult:
     win_rate: float | None
     expectancy: float | None
     note: str | None
+    # Serie de retornos barra a barra de este MISMO Portfolio: la que se
+    # persiste, para que las métricas de arriba y la curva del informe salgan
+    # de una sola fuente. `compare=False` la deja fuera de __eq__/__hash__
+    # (una Series no es comparable ni hashable sin ambigüedad), así que
+    # comparar dos TrialResult sigue comparando solo las métricas.
+    returns: pd.Series = field(compare=False)
 
 
 def _build_ma(name: str, period: int) -> Callable[[pd.Series], pd.Series]:
@@ -165,6 +171,11 @@ def run_trial(
         init_cash=init_cash,
     )
 
+    # Los retornos salen del mismo Portfolio que las métricas: una sola
+    # fuente de verdad, sin recálculo. Incluso sin operaciones hay serie
+    # (todo ceros), y su índice es el de las barras evaluadas.
+    returns = portfolio.returns()
+
     n_trades = int(portfolio.trades.count())
     if n_trades == 0:
         return TrialResult(
@@ -176,6 +187,7 @@ def run_trial(
             win_rate=None,
             expectancy=None,
             note="sin operaciones",
+            returns=returns,
         )
 
     sharpe = float(portfolio.sharpe_ratio())
@@ -188,6 +200,7 @@ def run_trial(
         win_rate=float(portfolio.trades.win_rate()),
         expectancy=float(portfolio.trades.expectancy()),
         note=None,
+        returns=returns,
     )
 
 
@@ -251,6 +264,7 @@ def run_sweep(
             win_rate=result.win_rate,
             expectancy=result.expectancy,
             note=result.note,
+            returns=result.returns,
         )
         if progress is not None:
             progress(i, total)
