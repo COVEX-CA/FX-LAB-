@@ -19,7 +19,11 @@ import pandas as pd
 import pytest
 
 from fxlab.reporting.report import ReportInputs, build_report
-from fxlab.reporting.sections import RankedConfigurations, rank_configurations
+from fxlab.reporting.sections import (
+    RankedConfigurations,
+    data_coverage_banner,
+    rank_configurations,
+)
 from fxlab.split import HOLDOUT_START
 from fxlab.sweep.engine import TrialResult
 from fxlab.validation.pbo import probability_of_backtest_overfitting
@@ -431,3 +435,61 @@ def test_no_public_reporting_function_returns_a_bare_configuration() -> None:
     # El único punto de entrada del paquete es build_report, que escribe un
     # informe completo; no hay ninguna función que devuelva una configuración.
     assert set(reporting_package.__all__) == {"ReportInputs", "build_report"}
+
+
+# --- cobertura de datos ----------------------------------------------------
+
+
+def test_coverage_banner_flags_a_development_subperiod() -> None:
+    trials = pd.DataFrame(
+        {
+            "start_date": ["2015-01-01T00:00:00+00:00"],
+            "end_date": ["2016-12-31T23:00:00+00:00"],
+        }
+    )
+    banner = data_coverage_banner(trials)
+    assert 'id="data-coverage"' in banner
+    assert "collapsed-warning" in banner  # prominente, no una nota al pie
+    assert "no cubre" in banner.lower()
+    assert "2015-01-01" in banner and "2016-12-31" in banner
+
+
+def test_coverage_banner_is_neutral_when_it_covers_all_of_development() -> None:
+    # Primera y última barra a días del borde de la partición (festivos,
+    # inicio del histórico): cuenta como cobertura completa, no subperíodo.
+    trials = pd.DataFrame(
+        {
+            "start_date": ["2004-01-02T00:00:00+00:00"],
+            "end_date": ["2019-12-31T23:00:00+00:00"],
+        }
+    )
+    banner = data_coverage_banner(trials)
+    assert 'id="data-coverage"' in banner
+    assert "collapsed-warning" not in banner
+    assert "completa" in banner.lower()
+
+
+def test_coverage_banner_never_prints_a_holdout_date() -> None:
+    # El fin de desarrollo se muestra como su última fecha inclusive
+    # (2019-12-31), nunca el corte de holdout (2020-01-01).
+    trials = pd.DataFrame(
+        {
+            "start_date": ["2004-01-02T00:00:00+00:00"],
+            "end_date": ["2019-12-31T23:00:00+00:00"],
+        }
+    )
+    dates = {
+        pd.Timestamp(match, tz="UTC")
+        for match in re.findall(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)", data_coverage_banner(trials))
+    }
+    assert dates and not any(d >= HOLDOUT_START for d in dates)
+
+
+def test_report_shows_the_coverage_banner_above_the_verdict(tmp_path: Path) -> None:
+    output = tmp_path / "coverage.html"
+    build_report(_inputs(verdict=_verdict_report(Verdict.CANDIDATO)), output)
+    body = _body(output.read_text(encoding="utf-8"))
+    # el fixture por defecto barre 2010-01..03: subperíodo, y el aviso va
+    # arriba del todo, antes del veredicto
+    assert 'id="data-coverage"' in body
+    assert body.index('id="data-coverage"') < body.index('id="verdict"')

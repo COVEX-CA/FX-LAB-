@@ -1,8 +1,10 @@
 """El script de línea de comandos, de extremo a extremo sobre un registro
-SQLite real y un parquet de retornos sintéticos.
+SQLite real.
 
 Cubre el cableado que los tests de `build_report` no tocan: leer del
-registro, leer el parquet, montar la evidencia y llamar a validation.
+registro tanto las métricas como la matriz de retornos, montar la evidencia
+y llamar a validation. Ya no hay ningún fichero externo de retornos: el
+barrido los persiste en el propio `trials.db` y el informe los lee de ahí.
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from fxlab.sweep.costs import CostModel
+from fxlab.sweep.engine import run_sweep
 from fxlab.sweep.registry import TrialRegistry
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "generate_report.py"
@@ -33,7 +37,8 @@ def _load_script() -> ModuleType:
     return module
 
 
-def _build_fixtures(tmp_path: Path) -> tuple[Path, Path, str]:
+def _build_fixtures(tmp_path: Path) -> tuple[Path, str]:
+    """Registro con retornos ya persistidos; devuelve (db, id de trial objetivo)."""
     records = [
         {"slow_period": slow, "fast_period": fast, "slow_ma": "sma"}
         for slow, fast in itertools.product((10, 20, 30, 40, 50), (2, 4))
@@ -67,18 +72,27 @@ def _build_fixtures(tmp_path: Path) -> tuple[Path, Path, str]:
                 note=None,
                 returns=series,
             )
-        # Las columnas de la matriz de retornos son los id que acaba de
-        # asignar el registro: es el contrato de ReportInputs.
-        ids = [str(v) for v in registry.load_experiment("exp-cli")["id"]]
+        target = str(registry.load_experiment("exp-cli")["id"].iloc[0])
 
-    returns = pd.DataFrame(data, index=returns_index, columns=ids)
-    returns_path = tmp_path / "returns.parquet"
-    returns.to_parquet(returns_path)
-    return db_path, returns_path, ids[0]
+    return db_path, target
+
+
+def _synthetic_ohlc(
+    n: int, start: str = "2004-01-01", seed: int = 0, spread: float = 0.0001
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    index = pd.date_range(start, periods=n, freq="1h", tz="UTC")
+    rng = np.random.default_rng(seed)
+    close = 1.10 + np.cumsum(rng.normal(0, 0.0005, n))
+    open_ = close - rng.normal(0, 0.0001, n)
+    high = np.maximum(open_, close) + np.abs(rng.normal(0, 0.0002, n))
+    low = np.minimum(open_, close) - np.abs(rng.normal(0, 0.0002, n))
+    bid = pd.DataFrame({"open": open_, "high": high, "low": low, "close": close}, index=index)
+    ask = bid + spread
+    return bid, ask
 
 
 def test_script_generates_a_report_end_to_end(tmp_path: Path) -> None:
-    db_path, returns_path, target = _build_fixtures(tmp_path)
+    db_path, target = _build_fixtures(tmp_path)
     output = tmp_path / "informe.html"
     script = _load_script()
 
@@ -87,8 +101,6 @@ def test_script_generates_a_report_end_to_end(tmp_path: Path) -> None:
             "exp-cli",
             "--registry",
             str(db_path),
-            "--returns",
-            str(returns_path),
             "--output",
             str(output),
             "--metric",
@@ -120,6 +132,67 @@ def test_script_generates_a_report_end_to_end(tmp_path: Path) -> None:
     assert "Plotly.newPlot" in html  # el bundle sí está embebido y se usa
 
 
+def test_report_generates_end_to_end_from_a_real_sweep(tmp_path: Path) -> None:
+    # La tubería entera sin pasos manuales: un barrido real persiste sus
+    # retornos, y el informe se genera leyéndolos del mismo registro.
+    bid, ask = _synthetic_ohlc(1000, seed=11)
+    grid = {
+        "slow_ma": ["sma", "ema"],
+        "slow_period": [20],
+        "fast_ma": ["ema"],
+        "fast_period": [5, 10, 15],
+        "n_bars": [5],
+        "use_adx_filter": [False],
+        "adx_threshold": [None],
+        "adx_period": [14],
+    }
+
+    db_path = tmp_path / "trials.db"
+    with TrialRegistry(db_path) as registry:
+        run_sweep(
+            bid,
+            ask,
+            grid,
+            CostModel(commission=0.00007),
+            registry,
+            experiment_id="real",
+            symbol="EUR/USD",
+            interval="1HOUR",
+            freq="1h",
+        )
+        target = str(registry.load_experiment("real")["id"].iloc[0])
+
+    output = tmp_path / "informe.html"
+    script = _load_script()
+    script.main(
+        [
+            "real",
+            "--registry",
+            str(db_path),
+            "--output",
+            str(output),
+            "--metric",
+            "sharpe_annualized",
+            "--target",
+            target,
+            "--distance-threshold",
+            "0.3",
+            "--pbo-s",
+            "4",
+            "--min-effective-trials",
+            "5",
+        ]
+    )
+
+    assert output.exists()
+    body = output.read_text(encoding="utf-8").split("<body>", 1)[1]
+    assert 'id="verdict"' in body
+    # el barrido sintético cubre unos días de 2004: es un subperíodo, y el
+    # aviso de cobertura debe aparecer arriba del todo
+    assert 'id="data-coverage"' in body
+    assert body.index('id="data-coverage"') < body.index('id="verdict"')
+
+
 def test_script_requires_the_quality_parameters(tmp_path: Path) -> None:
     # Sin valores por defecto: omitir --min-effective-trials debe fallar,
     # no elegir un mínimo en silencio.
@@ -130,8 +203,6 @@ def test_script_requires_the_quality_parameters(tmp_path: Path) -> None:
                 "exp-cli",
                 "--registry",
                 str(tmp_path / "trials.db"),
-                "--returns",
-                str(tmp_path / "returns.parquet"),
                 "--output",
                 str(tmp_path / "out.html"),
                 "--metric",
