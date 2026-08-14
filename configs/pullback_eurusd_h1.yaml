@@ -1,0 +1,22 @@
+# Ejemplo de configuración de barrido para fxlab.strategies.pullback.
+#
+# commission: OBLIGATORIO. No hay valor por defecto en el código — el
+# ejemplo de abajo es orientativo (comisión típica de un bróker ECN sobre
+# EUR/USD, en proporción del valor de cada operación) y debe ajustarse al
+# bróker real que se quiera modelar. El spread nunca se configura aquí: se
+# toma siempre de la diferencia bid/ask real de los datos descargados.
+
+experiment_id: pullback_eurusd_h1_v1
+symbol: "EUR/USD"
+interval: "1HOUR"
+commission: 0.00007
+
+grid:
+  slow_ma: [sma, ema]
+  slow_period: [50, 100]
+  fast_ma: [sma, ema]
+  fast_period: [10, 20]
+  n_bars: [5, 10]
+  use_adx_filter: [false, true]
+  adx_threshold: [25.0]
+  adx_period: [14]
