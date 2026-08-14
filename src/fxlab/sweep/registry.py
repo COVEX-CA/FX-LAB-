@@ -24,8 +24,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 
+import numpy as np
 import pandas as pd
 
+# `returns_values` va en la MISMA fila que las métricas y es NOT NULL: es lo
+# que hace estructuralmente imposible tener un trial sin su serie de retornos
+# (la BD rechaza el INSERT), o retornos sin su trial (viven en la fila). Los
+# timestamps del índice, en cambio, son idénticos para todos los trials de un
+# mismo barrido, así que se guardan una sola vez por (experiment_id,
+# data_hash) en `returns_index` en vez de repetirlos en cada fila.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS trials (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,10 +53,35 @@ CREATE TABLE IF NOT EXISTS trials (
     profit_factor REAL,
     win_rate REAL,
     expectancy REAL,
-    note TEXT
+    note TEXT,
+    returns_values BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_trials_experiment ON trials(experiment_id);
+CREATE TABLE IF NOT EXISTS returns_index (
+    experiment_id TEXT NOT NULL,
+    data_hash TEXT NOT NULL,
+    n INTEGER NOT NULL,
+    index_ns BLOB NOT NULL,
+    PRIMARY KEY (experiment_id, data_hash)
+);
 """
+
+
+def _encode_index(index: pd.DatetimeIndex) -> bytes:
+    """Serializa un `DatetimeIndex` UTC como nanosegundos int64."""
+    naive = index.tz_convert("UTC").tz_localize(None)
+    return naive.to_numpy(dtype="datetime64[ns]").view("int64").tobytes()
+
+
+def _decode_index(blob: bytes) -> pd.DatetimeIndex:
+    """Reconstruye el `DatetimeIndex` UTC desde los nanosegundos int64."""
+    ns = np.frombuffer(blob, dtype="int64")
+    return pd.DatetimeIndex(pd.to_datetime(ns, utc=True))
+
+
+def _encode_returns(returns: pd.Series) -> bytes:
+    """Serializa los valores de una serie de retornos como float64."""
+    return returns.to_numpy(dtype="float64").tobytes()
 
 
 def current_code_version() -> str | None:
@@ -127,21 +159,68 @@ class TrialRegistry:
         win_rate: float | None,
         expectancy: float | None,
         note: str | None,
-    ) -> None:
+        returns: pd.Series,
+    ) -> int:
         """Escribe una fila para una combinación evaluada. Commit inmediato.
 
         `n_trades=0` y el resto de métricas en `None` (con `note` indicando
         el motivo) es un resultado válido que se registra igual que
-        cualquier otro — nunca se omite.
+        cualquier otro — nunca se omite. Incluso sin operaciones hay una
+        serie de retornos (todo ceros): `returns` es obligatoria y se guarda
+        en la misma fila, así que nunca hay un trial sin sus retornos.
+
+        `returns` debe ser exactamente la serie que produjo las métricas de
+        arriba (no un recálculo): una sola fuente de verdad. Su índice tiene
+        que ser el mismo para todos los trials del experimento —lo garantiza
+        que compartan `data_hash`— y se guarda una única vez.
+
+        Args:
+            returns: serie de retornos barra a barra, con `DatetimeIndex`
+                timezone-aware en UTC. Sus valores se guardan en la fila del
+                trial; su índice, una vez por (experiment_id, data_hash).
+
+        Returns:
+            El `id` autoincremental asignado a la fila. Es lo que liga el
+            trial con su columna en `load_returns_matrix`.
+
+        Raises:
+            ValueError: si `returns` no tiene un `DatetimeIndex` UTC, o si su
+                longitud no casa con la del índice ya registrado para el
+                mismo (experiment_id, data_hash).
         """
+        index = returns.index
+        if not isinstance(index, pd.DatetimeIndex) or index.tz is None:
+            raise ValueError("returns necesita un DatetimeIndex timezone-aware en UTC")
+
+        # El índice es idéntico para todos los trials del mismo barrido, así
+        # que se escribe una sola vez: INSERT OR IGNORE es idempotente (lo
+        # fija el primer trial, el resto es no-op). Va ANTES del INSERT del
+        # trial para que una interrupción nunca deje una fila de trial cuyo
+        # índice no esté todavía en disco.
         self._conn.execute(
+            "INSERT OR IGNORE INTO returns_index (experiment_id, data_hash, n, index_ns) "
+            "VALUES (?, ?, ?, ?)",
+            (experiment_id, data_hash, len(returns), _encode_index(index)),
+        )
+        stored_n = self._conn.execute(
+            "SELECT n FROM returns_index WHERE experiment_id = ? AND data_hash = ?",
+            (experiment_id, data_hash),
+        ).fetchone()[0]
+        if int(stored_n) != len(returns):
+            raise ValueError(
+                f"la serie de retornos tiene {len(returns)} barras pero el índice ya "
+                f"registrado para el experimento {experiment_id!r} (data_hash "
+                f"{data_hash}) tiene {int(stored_n)}: no casan"
+            )
+
+        cursor = self._conn.execute(
             """
             INSERT INTO trials (
                 experiment_id, created_at, symbol, interval, partition,
                 start_date, end_date, data_hash, code_version, params_json,
                 n_trades, total_return, sharpe_annualized, max_drawdown, profit_factor,
-                win_rate, expectancy, note
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                win_rate, expectancy, note, returns_values
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 experiment_id,
@@ -162,8 +241,13 @@ class TrialRegistry:
                 win_rate,
                 expectancy,
                 note,
+                _encode_returns(returns),
             ),
         )
+        row_id = cursor.lastrowid
+        if row_id is None:  # pragma: no cover - sqlite siempre asigna rowid en un INSERT
+            raise RuntimeError("el INSERT no devolvió un rowid")
+        return int(row_id)
 
     def count_trials(self, experiment_id: str) -> int:
         """Recuento fiable de filas registradas para `experiment_id`.
@@ -181,15 +265,69 @@ class TrialRegistry:
         """Resultados de `experiment_id` como DataFrame, uno por fila registrada.
 
         `params_json` se expande en columnas `param_<nombre>` para que sea
-        cómodo filtrar/agrupar por parámetro sin parsear JSON a mano.
+        cómodo filtrar/agrupar por parámetro sin parsear JSON a mano. El blob
+        `returns_values` se descarta: esta es la vista de métricas; la matriz
+        de retornos barra a barra se obtiene con `load_returns_matrix`.
         """
         df = pd.read_sql_query(
             "SELECT * FROM trials WHERE experiment_id = ? ORDER BY id",
             self._conn,
             params=(experiment_id,),
         )
+        df = df.drop(columns=["returns_values"], errors="ignore")
         if not df.empty:
             expanded = pd.json_normalize(df["params_json"].apply(json.loads))
             expanded.columns = [f"param_{c}" for c in expanded.columns]
             df = pd.concat([df.drop(columns=["params_json"]), expanded], axis=1)
         return df
+
+    def load_returns_matrix(self, experiment_id: str) -> pd.DataFrame:
+        """Matriz T×N de retornos barra a barra de `experiment_id`.
+
+        Cada columna es el `id` de trial (como cadena) y va en el mismo orden
+        que `load_experiment`; el índice es el `DatetimeIndex` UTC común a
+        todos los trials del barrido. Es exactamente el contrato que espera
+        `fxlab.reporting`: liga cada configuración con su curva de equity por
+        `id`, sin emparejar por posición.
+
+        Raises:
+            ValueError: si el experimento no tiene pruebas, si mezcla varios
+                `data_hash` (no se puede formar una única matriz coherente),
+                o si algún trial guarda un número de retornos que no casa con
+                el índice del experimento.
+        """
+        rows = self._conn.execute(
+            "SELECT id, data_hash, returns_values FROM trials WHERE experiment_id = ? ORDER BY id",
+            (experiment_id,),
+        ).fetchall()
+        if not rows:
+            raise ValueError(f"el experimento {experiment_id!r} no tiene ninguna prueba registrada")
+
+        data_hashes = {row[1] for row in rows}
+        if len(data_hashes) != 1:
+            raise ValueError(
+                f"el experimento {experiment_id!r} mezcla {len(data_hashes)} conjuntos de "
+                "datos distintos (data_hash): no se puede formar una única matriz de retornos"
+            )
+        data_hash = next(iter(data_hashes))
+
+        index_row = self._conn.execute(
+            "SELECT index_ns FROM returns_index WHERE experiment_id = ? AND data_hash = ?",
+            (experiment_id, data_hash),
+        ).fetchone()
+        if index_row is None:  # pragma: no cover - la invariante lo impide
+            raise ValueError(
+                f"faltan los timestamps del experimento {experiment_id!r} (data_hash {data_hash})"
+            )
+        index = _decode_index(index_row[0])
+
+        columns: dict[str, np.ndarray] = {}
+        for trial_id, _, returns_blob in rows:
+            values = np.frombuffer(returns_blob, dtype="float64")
+            if len(values) != len(index):
+                raise ValueError(
+                    f"el trial {trial_id} guarda {len(values)} retornos pero el índice del "
+                    f"experimento tiene {len(index)}: no casan"
+                )
+            columns[str(trial_id)] = values
+        return pd.DataFrame(columns, index=index)

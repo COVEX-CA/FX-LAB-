@@ -44,9 +44,10 @@ def _build_fixtures(tmp_path: Path) -> tuple[Path, Path, str]:
     db_path = tmp_path / "trials.db"
     start = pd.Timestamp("2010-01-01", tz="UTC")
     end = pd.Timestamp("2010-03-01", tz="UTC")
+    returns_index = pd.date_range("2010-01-01", periods=1600, freq="1h", tz="UTC")
     with TrialRegistry(db_path) as registry:
         for position, record in enumerate(records):
-            series = pd.Series(data[:, position])
+            series = pd.Series(data[:, position], index=returns_index)
             registry.record_trial(
                 experiment_id="exp-cli",
                 symbol="EUR/USD",
@@ -64,16 +65,13 @@ def _build_fixtures(tmp_path: Path) -> tuple[Path, Path, str]:
                 win_rate=0.55,
                 expectancy=0.01,
                 note=None,
+                returns=series,
             )
         # Las columnas de la matriz de retornos son los id que acaba de
         # asignar el registro: es el contrato de ReportInputs.
         ids = [str(v) for v in registry.load_experiment("exp-cli")["id"]]
 
-    returns = pd.DataFrame(
-        data,
-        index=pd.date_range("2010-01-01", periods=1600, freq="1h", tz="UTC"),
-        columns=ids,
-    )
+    returns = pd.DataFrame(data, index=returns_index, columns=ids)
     returns_path = tmp_path / "returns.parquet"
     returns.to_parquet(returns_path)
     return db_path, returns_path, ids[0]

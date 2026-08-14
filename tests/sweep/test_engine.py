@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -9,6 +10,7 @@ import pytest
 from fxlab.split import HOLDOUT_START, Partition
 from fxlab.sweep.costs import CostModel
 from fxlab.sweep.engine import SweepParams, iter_grid, run_sweep, run_trial
+from fxlab.sweep.registry import TrialRegistry
 
 
 def _synthetic_bid_ask(
@@ -89,6 +91,10 @@ def test_run_trial_with_no_possible_exit_registers_zero_trades() -> None:
     assert result.profit_factor is None
     assert result.win_rate is None
     assert result.expectancy is None
+    # incluso sin operaciones hay serie de retornos (todo el rango de barras),
+    # para que la fila del registro nunca quede sin sus retornos asociados
+    assert isinstance(result.returns, pd.Series)
+    assert result.returns.index.equals(bid.index)
 
 
 def test_run_trial_with_trades_has_no_note() -> None:
@@ -98,6 +104,10 @@ def test_run_trial_with_trades_has_no_note() -> None:
     assert result.n_trades > 0
     assert result.note is None
     assert result.total_return is not None
+    # la serie de retornos está alineada con las barras evaluadas
+    assert isinstance(result.returns, pd.Series)
+    assert result.returns.index.equals(bid.index)
+    assert len(result.returns) == len(bid)
 
 
 def test_spread_reduces_return_even_with_zero_commission() -> None:
@@ -169,3 +179,45 @@ def test_run_sweep_holdout_requires_explicit_partition_and_logs_warning(
     assert any("holdout" in r.message.lower() for r in caplog.records)
     assert registry.calls[0]["partition"] == Partition.HOLDOUT.value
     assert registry.calls[0]["start_date"] >= HOLDOUT_START
+
+
+def test_run_sweep_persists_a_returns_matrix_aligned_with_the_registry(tmp_path: Path) -> None:
+    # Un barrido real sobre un TrialRegistry real: al terminar, la matriz de
+    # retornos debe existir sin ningún paso manual, con una columna por trial
+    # (por id, en orden) — justo el contrato que consume fxlab.reporting.
+    bid, ask = _synthetic_bid_ask(300, seed=7)  # empieza en 2004, todo desarrollo
+    grid = {
+        "slow_ma": ["sma", "ema"],
+        "slow_period": [20],
+        "fast_ma": ["ema"],
+        "fast_period": [5, 10],
+        "n_bars": [5],
+        "use_adx_filter": [False],
+        "adx_threshold": [None],
+        "adx_period": [14],
+    }
+
+    db_path = tmp_path / "trials.db"
+    with TrialRegistry(db_path) as registry:
+        total = run_sweep(
+            bid,
+            ask,
+            grid,
+            CostModel(commission=0.00007),
+            registry,
+            experiment_id="e2e",
+            symbol="EUR/USD",
+            interval="1HOUR",
+            freq="1h",
+        )
+        trials = registry.load_experiment("e2e")
+        matrix = registry.load_returns_matrix("e2e")
+
+    assert total == 4
+    assert len(trials) == 4
+    # biyección: una columna por trial, por id y en el mismo orden
+    assert list(matrix.columns) == [str(i) for i in trials["id"]]
+    # índice UTC compartido, con todas las barras de desarrollo (sin holdout)
+    assert isinstance(matrix.index, pd.DatetimeIndex)
+    assert matrix.index.tz is not None
+    assert len(matrix) == len(bid)

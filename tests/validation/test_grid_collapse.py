@@ -54,6 +54,9 @@ def _trial_result(sharpe_annualized: float) -> TrialResult:
         win_rate=0.55,
         expectancy=0.01,
         note=None,
+        returns=pd.Series(
+            [0.0], index=pd.date_range("2010-01-01", periods=1, freq="1h", tz="UTC")
+        ),
     )
 
 
