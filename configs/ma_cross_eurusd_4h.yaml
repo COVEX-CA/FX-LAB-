@@ -1,0 +1,20 @@
+# Cruce de medias en EURUSD 4 HORAS. Mismo grid PRE-REGISTRADO que el de D1
+# (misma pregunta, otro timeframe): se corren como experimentos SEPARADOS, cada
+# uno con su propio veredicto. Probar dos timeframes es probar dos veces, y hay
+# que tenerlo en cuenta al leer los resultados y al gastar el holdout.
+#
+# 5 (fast_ma) x 4 (fast_period) x 5 (slow_ma) x 3 (slow_period) = 300 combinaciones.
+#
+# El rango temporal se elige al lanzar (--start/--end). El holdout no se toca.
+
+experiment_id: ma_cross_eurusd_4h
+symbol: "EUR/USD"
+interval: "4HOUR"
+strategy: ma_cross
+commission: 0.00007
+
+grid:
+  fast_ma: [sma, ema, wma, hma, tema]
+  fast_period: [10, 20, 30, 50]
+  slow_ma: [sma, ema, wma, hma, tema]
+  slow_period: [100, 150, 200]

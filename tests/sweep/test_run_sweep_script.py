@@ -17,6 +17,7 @@ import pandas as pd
 import pytest
 
 from fxlab.split import DEVELOPMENT_START, HOLDOUT_START, Partition
+from fxlab.sweep.engine import run_ma_cross_sweep, run_sweep
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "run_sweep.py"
 _NOW = pd.Timestamp("2024-01-01", tz="UTC")
@@ -91,6 +92,18 @@ def test_resolve_range_holdout_cannot_reach_back_into_development() -> None:
     script = _load_script()
     with pytest.raises(ValueError, match="holdout"):
         script.resolve_range(Partition.HOLDOUT, _ts("2019-06-01"), None, now=_NOW)
+
+
+def test_select_sweep_dispatches_by_strategy() -> None:
+    script = _load_script()
+    assert script.select_sweep("pullback") is run_sweep
+    assert script.select_sweep("ma_cross") is run_ma_cross_sweep
+
+
+def test_select_sweep_rejects_an_unknown_strategy() -> None:
+    script = _load_script()
+    with pytest.raises(ValueError, match="desconocida"):
+        script.select_sweep("bollinger")
 
 
 def test_parser_accepts_start_and_end_and_defaults_them_to_none() -> None:
