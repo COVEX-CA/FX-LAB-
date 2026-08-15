@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -32,10 +33,27 @@ from fxlab.data.store import DEFAULT_DATA_DIR
 from fxlab.data.types import OfferSide
 from fxlab.split import DEVELOPMENT_START, HOLDOUT_START, Partition
 from fxlab.sweep.config import load_config
-from fxlab.sweep.engine import run_sweep
+from fxlab.sweep.engine import run_ma_cross_sweep, run_sweep
 from fxlab.sweep.registry import TrialRegistry
 
 logger = logging.getLogger("fxlab.run_sweep")
+
+# Las dos funciones de barrido comparten firma exacta, así que el dispatch es
+# solo elegir cuál según la estrategia declarada en la config.
+_SWEEP_FUNCTIONS: dict[str, Callable[..., int]] = {
+    "pullback": run_sweep,
+    "ma_cross": run_ma_cross_sweep,
+}
+
+
+def select_sweep(strategy: str) -> Callable[..., int]:
+    """Función de barrido para la estrategia declarada en la config."""
+    if strategy not in _SWEEP_FUNCTIONS:
+        raise ValueError(
+            f"estrategia desconocida: {strategy!r}, debe ser una de {list(_SWEEP_FUNCTIONS)}"
+        )
+    return _SWEEP_FUNCTIONS[strategy]
+
 
 _INTERVAL_CHOICES = {
     "1MIN": dukascopy_python.INTERVAL_MIN_1,
@@ -177,10 +195,13 @@ def main() -> None:
     # y `load_range` no llega a descargar ni tocar datos reservados.
     start, end = resolve_range(partition, args.start, args.end)
 
+    sweep = select_sweep(config.strategy)
+
     logger.info(
-        "cargando %s %s, partición %s, [%s, %s)",
+        "cargando %s %s, estrategia %s, partición %s, [%s, %s)",
         config.symbol,
         config.interval,
+        config.strategy,
         partition.value,
         start,
         end,
@@ -192,7 +213,7 @@ def main() -> None:
         logger.info("combinación %d/%d", done, total)
 
     with TrialRegistry(args.registry_db) as registry:
-        total = run_sweep(
+        total = sweep(
             bid,
             ask,
             config.grid,

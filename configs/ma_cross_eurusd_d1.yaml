@@ -1,0 +1,25 @@
+# Cruce de medias en EURUSD DIARIO. Grid PRE-REGISTRADO (decidido de una vez,
+# no se amplía sobre la marcha): 5 tipos de media con cruces entre tipos
+# distintos permitidos (tipo rápido y lento independientes), períodos rápidos
+# 10-50 contra lentos 100-200.
+#
+# 5 (fast_ma) x 4 (fast_period) x 5 (slow_ma) x 3 (slow_period) = 300 combinaciones.
+#
+# Se deja fuera a propósito: las medias adaptativas (kama, vidya, mcginley), que
+# no tienen un período fijo que cruzar; y dema/zlema/alma/t3, casi clones de las
+# incluidas (correlación alta) que solo inflarían el recuento sin aportar apuestas.
+#
+# El rango temporal NO se fija aquí: se elige al lanzar (--start/--end) para que
+# el nº de barras sea compatible con el PBO. El holdout no se toca.
+
+experiment_id: ma_cross_eurusd_d1
+symbol: "EUR/USD"
+interval: "1DAY"
+strategy: ma_cross
+commission: 0.00007
+
+grid:
+  fast_ma: [sma, ema, wma, hma, tema]
+  fast_period: [10, 20, 30, 50]
+  slow_ma: [sma, ema, wma, hma, tema]
+  slow_period: [100, 150, 200]
