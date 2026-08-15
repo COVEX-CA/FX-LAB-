@@ -19,6 +19,7 @@ import vectorbt as vbt
 
 from fxlab.indicators.moving_averages import MOVING_AVERAGES
 from fxlab.split import Partition, filter_partition
+from fxlab.strategies.ma_cross import generate_signals as generate_cross_signals
 from fxlab.strategies.pullback import generate_signals
 from fxlab.sweep.costs import CostModel, execution_prices
 from fxlab.sweep.registry import TrialRegistry, hash_dataset
@@ -247,6 +248,185 @@ def run_sweep(
 
     for i, params in enumerate(combos, start=1):
         result = run_trial(bid_partition, ask_partition, params, cost_model, freq=freq)
+        registry.record_trial(
+            experiment_id=experiment_id,
+            symbol=symbol,
+            interval=interval,
+            partition=partition.value,
+            start_date=start_date,
+            end_date=end_date,
+            data_hash=data_hash,
+            params=params.as_dict(),
+            n_trades=result.n_trades,
+            total_return=result.total_return,
+            sharpe_annualized=result.sharpe_annualized,
+            max_drawdown=result.max_drawdown,
+            profit_factor=result.profit_factor,
+            win_rate=result.win_rate,
+            expectancy=result.expectancy,
+            note=result.note,
+            returns=result.returns,
+        )
+        if progress is not None:
+            progress(i, total)
+
+    return total
+
+
+# --------------------------------------------------------------------------- #
+# Cruce de medias (fxlab.strategies.ma_cross)
+#
+# Ruta de barrido paralela a la de pullback, a propósito: comparte lo genérico
+# (TrialResult, _build_ma, execution_prices, el registro), pero es una función
+# distinta para no acoplar ni arriesgar el camino de pullback. Cada estrategia
+# tiene su propia rejilla, y esta no tiene n_bars ni ADX: solo tipo y período
+# de la media rápida y la lenta, independientes (admite cruces entre tipos).
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class MaCrossParams:
+    """Una combinación de parámetros de `fxlab.strategies.ma_cross`."""
+
+    fast_ma: str
+    fast_period: int
+    slow_ma: str
+    slow_period: int
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+def iter_ma_cross_grid(grid: Mapping[str, list[object]]) -> Iterator[MaCrossParams]:
+    """Expande una rejilla de cruce de medias en todas sus combinaciones.
+
+    Producto cartesiano de los cuatro campos, sin eliminar redundancias: cada
+    punto de la rejilla es una prueba distinta y se registra como tal.
+    """
+    fields = ("fast_ma", "fast_period", "slow_ma", "slow_period")
+    missing = [f for f in fields if f not in grid]
+    if missing:
+        raise ValueError(f"faltan campos en la rejilla: {missing}")
+
+    values = [grid[f] for f in fields]
+    for combo in itertools.product(*values):
+        yield MaCrossParams(**dict(zip(fields, combo, strict=True)))  # type: ignore[arg-type]
+
+
+def run_ma_cross_trial(
+    bid: pd.DataFrame,
+    ask: pd.DataFrame,
+    params: MaCrossParams,
+    cost_model: CostModel,
+    *,
+    freq: str,
+    init_cash: float = 10_000.0,
+) -> TrialResult:
+    """Genera las señales de cruce de `params`, simula con VectorBT y mide.
+
+    Misma mecánica de ejecución y costes que `run_trial` (bid para las señales,
+    ask para el precio de compra, spread real, comisión siempre puesta); solo
+    cambia el generador de señales. Devuelve las métricas y la serie de retornos
+    del mismo `Portfolio` (una sola fuente de verdad).
+    """
+    if not bid.index.equals(ask.index):
+        raise ValueError("bid y ask deben compartir exactamente el mismo índice")
+
+    fast_ma_func = _build_ma(params.fast_ma, params.fast_period)
+    slow_ma_func = _build_ma(params.slow_ma, params.slow_period)
+
+    signals = generate_cross_signals(bid, fast_ma_func, slow_ma_func)
+
+    price = execution_prices(
+        signals.long_entries,
+        signals.long_exits,
+        signals.short_entries,
+        signals.short_exits,
+        bid["close"],
+        ask["close"],
+    )
+
+    portfolio = vbt.Portfolio.from_signals(
+        close=bid["close"],
+        entries=signals.long_entries,
+        exits=signals.long_exits,
+        short_entries=signals.short_entries,
+        short_exits=signals.short_exits,
+        price=price,
+        fees=cost_model.commission,
+        freq=freq,
+        init_cash=init_cash,
+    )
+
+    returns = portfolio.returns()
+
+    n_trades = int(portfolio.trades.count())
+    if n_trades == 0:
+        return TrialResult(
+            n_trades=0,
+            total_return=None,
+            sharpe_annualized=None,
+            max_drawdown=None,
+            profit_factor=None,
+            win_rate=None,
+            expectancy=None,
+            note="sin operaciones",
+            returns=returns,
+        )
+
+    sharpe = float(portfolio.sharpe_ratio())
+    return TrialResult(
+        n_trades=n_trades,
+        total_return=float(portfolio.total_return()),
+        sharpe_annualized=sharpe if math.isfinite(sharpe) else None,
+        max_drawdown=float(portfolio.max_drawdown()),
+        profit_factor=float(portfolio.trades.profit_factor()),
+        win_rate=float(portfolio.trades.win_rate()),
+        expectancy=float(portfolio.trades.expectancy()),
+        note=None,
+        returns=returns,
+    )
+
+
+def run_ma_cross_sweep(
+    bid: pd.DataFrame,
+    ask: pd.DataFrame,
+    grid: Mapping[str, list[object]],
+    cost_model: CostModel,
+    registry: TrialRegistry,
+    *,
+    experiment_id: str,
+    symbol: str,
+    interval: str,
+    freq: str,
+    partition: Partition = Partition.DEVELOPMENT,
+    progress: Callable[[int, int], None] | None = None,
+) -> int:
+    """Barre toda la rejilla de cruce de medias y registra cada combinación.
+
+    Mismas garantías que `run_sweep`: opera solo sobre desarrollo salvo que se
+    pida el holdout explícitamente, y cada combinación se registra con commit
+    inmediato (una interrupción no corrompe lo ya escrito).
+
+    Returns:
+        Número de combinaciones evaluadas y registradas.
+    """
+    bid_partition = filter_partition(bid, partition)
+    ask_partition = filter_partition(ask, partition)
+    if not bid_partition.index.equals(ask_partition.index):
+        raise ValueError("bid y ask deben compartir exactamente el mismo índice tras recortar")
+    if bid_partition.empty:
+        raise ValueError("la partición pedida no contiene datos")
+
+    data_hash = hash_dataset(bid_partition, ask_partition)
+    start_date = bid_partition.index.min()
+    end_date = bid_partition.index.max()
+
+    combos = list(iter_ma_cross_grid(grid))
+    total = len(combos)
+
+    for i, params in enumerate(combos, start=1):
+        result = run_ma_cross_trial(bid_partition, ask_partition, params, cost_model, freq=freq)
         registry.record_trial(
             experiment_id=experiment_id,
             symbol=symbol,
